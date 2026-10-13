@@ -133,14 +133,27 @@ governance change never affects an in-flight strategy.
 
 - `_payFee` wraps the transfer in `try/catch`: a failing recipient (e.g. blacklisted)
   escrows the amount in the governor instead of bricking settlement
-  (`src/SyndicateGovernor.sol`). Anyone can later push it out via the
-  permissionless `claimUnclaimedFees(vault, token)` (`src/SyndicateGovernor.sol`).
+  (`src/SyndicateGovernor.sol`). The recipient pulls it later with
+  `claimUnclaimedFees(vault, token)`, which pays `msg.sender` (`src/SyndicateGovernor.sol`).
 - The vault refuses to pay fees out of float reserved for stamped queue redemptions
   (`transferPerformanceFee` subtracts `reservedQueueAssets()`,
   `src/SyndicateVault.sol`).
 - The guardian slice is paid in the vault's asset to `guardiansFeeRecipient` and
   converted to WOOD off-chain (weekly Merkl buyback). `GuardianFeeAccrued` is emitted
   only on actual delivery, never on escrow.
+
+## Protocol fee router
+
+On mainnet `protocolFeeRecipient` is `ProtocolFeeRouter` (`src/ProtocolFeeRouter.sol`),
+not a team wallet. Fees accrue in the router. The owner (the Safe, then the
+foundation) sets allocations, a list of `(target, bps)` legs summing to 10,000,
+and anyone can call `distribute(token)` to forward the router's balance across them.
+It launches with no allocations, so fees are held and nothing leaves. The router has
+no swap or burn logic. If a fee transfer to it fails, anyone can call
+`claimEscrowedFees(governor, vault, token)` to pull the escrowed amount into the
+router. The governor snapshots the recipient at propose, so the router must be
+seated before the first proposal. The guardian leg (`guardiansFeeRecipient`) is a
+separate path (SHE-399).
 
 ## Co-proposer splits
 
