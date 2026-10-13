@@ -14,13 +14,17 @@ interface IEthUsdAggregator {
  * @title  WoodV3TwapFeed
  * @notice WOOD/USD on the `AggregatorV3` read surface, 8 decimals: the WOOD/WETH
  *         Uniswap V3 pool's own mean tick over `window`, times Chainlink ETH/USD.
- *         No stored state and no keeper; `updatedAt` is the read time.
- * @dev    The pool's observation ring must hold one slot per second of `window`,
- *         or swap spam evicts the history and `observe` reverts `OLD` (SHE-398).
+ *         No stored state and no keeper.
+ * @dev    The pool writes at most one observation per second, so a ring of
+ *         `window + 1` slots cannot be evicted by swaps. The constructor requires
+ *         that ring target (v1 audit F2, SHE-398).
  */
 contract WoodV3TwapFeed {
     error InvalidParameter();
-    /// @notice The pool is below its depth floor or the ETH/USD leg is unusable.
+    /// @notice The pool's ring target is below `window + 1` slots.
+    error RingTooShort();
+    /// @notice The pool is below its depth floor, the ETH/USD leg is unusable, or
+    ///         the price is zero or out of range.
     error PriceUnavailable();
 
     uint256 internal constant Q112 = 2 ** 112;
@@ -36,7 +40,8 @@ contract WoodV3TwapFeed {
     uint8 internal immutable _ethUsdFeedDecimals;
     uint256 public immutable ethUsdMaxAge;
     uint32 public immutable window;
-    /// @dev Liveness gate on in-range liquidity; not a manipulation control.
+    /// @dev Read-time floor on in-range liquidity. Not a manipulation control: a push
+    ///      out of every range halts reads in that block (it fails closed).
     uint128 public immutable minV3Liquidity;
 
     constructor(
@@ -56,6 +61,10 @@ contract WoodV3TwapFeed {
         // A pool holding anything other than exactly {WOOD, WETH} is refused.
         if (!((t0 == wood_ && t1 == weth_) || (t0 == weth_ && t1 == wood_))) revert InvalidParameter();
 
+        // The target only grows, so a ring that passes here cannot be evicted later.
+        (,,,, uint16 ringTarget,,) = IUniswapV3Pool(pool_).slot0();
+        if (ringTarget <= window_) revert RingTooShort();
+
         uint8 dec = IEthUsdAggregator(ethUsdFeed_).decimals();
         if (dec > MAX_ETH_FEED_DECIMALS) revert InvalidParameter();
 
@@ -71,7 +80,8 @@ contract WoodV3TwapFeed {
     }
 
     /// @notice The pool's TWAP over `window` in USD, 8 decimals. Reverts `OLD` (from the
-    ///         pool) while its ring cannot serve the window.
+    ///         pool) until its oldest observation is a window old.
+    /// @dev    `updatedAt` is the read time, so a consumer's max-delay bound is inert.
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
         if (IUniswapV3Pool(pool).liquidity() < minV3Liquidity) revert PriceUnavailable();
 
@@ -98,7 +108,8 @@ contract WoodV3TwapFeed {
     }
 
     /// @dev Arithmetic-mean tick over `window`, rounded toward negative infinity
-    ///      (v3-periphery `OracleLibrary.consult`).
+    ///      (v3-periphery `OracleLibrary.consult`). That overstates WOOD by up to one
+    ///      tick when WOOD is token1.
     function _meanTick(int56 from, int56 to) internal view returns (int24) {
         int256 span = int256(uint256(window));
         int256 delta = int256(to) - int256(from);

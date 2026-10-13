@@ -4,34 +4,32 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {WoodV3TwapFeed} from "src/pricing/WoodV3TwapFeed.sol";
 import {ExposureLedger} from "src/ExposureLedger.sol";
+import {IExposureLedger} from "src/interfaces/IExposureLedger.sol";
 import {MockUniswapV3Pool} from "test/mocks/MockUniswapV3Pool.sol";
 import {MockUniswapV3PoolRing} from "test/mocks/MockUniswapV3PoolRing.sol";
 import {MockAggregatorV3} from "test/mocks/MockAggregatorV3.sol";
 
-/// @dev A pool whose `observe` hands back a seated cumulative pair, so a test can
+/// @dev A pool whose `observe` hands back a seated cumulative delta, so a test can
 ///      give the feed a delta that does not divide by the window.
 contract SeatedCumulativesPool {
     address public immutable token0;
     address public immutable token1;
     uint128 public liquidity = 2e22;
-    int56 internal _from;
-    int56 internal _to;
+    int56 internal immutable _delta;
+    uint16 internal immutable _ringTarget;
 
-    constructor(address token0_, address token1_, int56 from_, int56 to_) {
-        (token0, token1, _from, _to) = (token0_, token1_, from_, to_);
+    constructor(address token0_, address token1_, int56 delta_, uint16 ringTarget_) {
+        (token0, token1, _delta, _ringTarget) = (token0_, token1_, delta_, ringTarget_);
+    }
+
+    function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool) {
+        return (0, 0, 0, _ringTarget, _ringTarget, 0, true);
     }
 
     function observe(uint32[] calldata) external view returns (int56[] memory c, uint160[] memory s) {
         c = new int56[](2);
         s = new uint160[](2);
-        (c[0], c[1]) = (_from, _to);
-    }
-}
-
-/// @dev The only sWOOD reads the ledger makes.
-contract TwapFeedSwood {
-    function coolDownPeriod() external pure returns (uint256) {
-        return 7 days;
+        c[1] = _delta;
     }
 }
 
@@ -42,14 +40,18 @@ abstract contract WoodV3TwapFeedFixture is Test {
     uint128 internal constant MIN_V3_LIQUIDITY = 1e22;
     uint128 internal constant V3_LIQUIDITY = 2e22;
     uint32 internal constant WINDOW = 1 hours;
+    /// @dev One slot more than the window has seconds: the smallest ring that cannot be evicted.
+    uint16 internal constant RING = uint16(WINDOW) + 1;
     uint256 internal constant ETH_MAX_AGE = 26 hours;
     int256 internal constant ETH_USD_X8 = 3000e8;
 
-    /// @dev `1.0001 ** -136339` is 1.2e-6 WETH per WOOD, $0.0036 at $3,000/ETH.
-    ///      A tick is a 0.01% step, so answers are held to 0.1%, not to the wei.
+    /// @dev Expected answers are `1.0001 ** tick * ETH/USD`, computed off chain at 120 digits:
+    ///      tick -136339 is 359,989.43 and one tick is 36 units, so `+-1` pins the tick.
     int24 internal constant TICK = -136_339;
     int24 internal constant TICKS_PER_DOUBLING = 6932;
-    uint256 internal constant ANSWER_X8 = 360_000;
+    uint256 internal constant ANSWER_X8 = 359_989;
+    /// @dev 1e-6 relative, a hundredth of a tick, for answers too large to pin to the unit.
+    uint256 internal constant HUNDREDTH_OF_A_TICK = 1e12;
 
     MockAggregatorV3 internal ethUsd;
 
@@ -57,10 +59,16 @@ abstract contract WoodV3TwapFeedFixture is Test {
         p = new MockUniswapV3Pool(token0, token1, 3000, 60, makeAddr("v3Factory"));
         p.setLiquidity(V3_LIQUIDITY);
         p.setTicks(twapTick, twapTick);
+        p.increaseObservationCardinalityNext(RING);
     }
 
     function _feed(address pool) internal returns (WoodV3TwapFeed) {
         return new WoodV3TwapFeed(pool, WOOD, WETH, address(ethUsd), ETH_MAX_AGE, WINDOW, MIN_V3_LIQUIDITY);
+    }
+
+    /// @dev A feed over a pool whose cumulative delta across the window is `delta`.
+    function _seated(address token0, address token1, int256 delta) internal returns (WoodV3TwapFeed) {
+        return _feed(address(new SeatedCumulativesPool(token0, token1, int56(delta), RING)));
     }
 
     function _answer(WoodV3TwapFeed feed) internal view returns (uint256) {
@@ -82,35 +90,74 @@ contract WoodV3TwapFeedTest is WoodV3TwapFeedFixture {
 
     /// @notice The answer is the pool's mean tick over the window, in USD at 8 decimals.
     function test_answersTheWindowMeanTickInUsd() public view {
-        assertApproxEqRel(_answer(feed), ANSWER_X8, 0.001e18);
+        assertApproxEqAbs(_answer(feed), ANSWER_X8, 1);
         assertEq(feed.decimals(), 8);
     }
 
     /// @notice A pool holding WOOD as token1 prices WETH in WOOD, and the feed inverts it.
     function test_answersTheSamePriceWhenWoodIsToken1() public {
-        WoodV3TwapFeed flipped = _feed(address(_newPool(WETH, WOOD, -TICK)));
-        assertApproxEqRel(_answer(flipped), ANSWER_X8, 0.001e18);
+        assertApproxEqAbs(_answer(_feed(address(_newPool(WETH, WOOD, -TICK)))), ANSWER_X8, 1);
     }
 
     /// @notice Spot standing at twice the average does not move the answer.
     function test_readsTheAverageNotSpot() public {
         pool.setTicks(TICK + TICKS_PER_DOUBLING, TICK);
-        assertApproxEqRel(_answer(feed), ANSWER_X8, 0.001e18);
+        assertApproxEqAbs(_answer(feed), ANSWER_X8, 1);
     }
 
-    /// @notice A mean tick with a remainder rounds toward negative infinity, as v3-periphery does.
-    function test_roundsANegativeMeanTickDown() public {
-        int56 exact = int56(TICK - 1) * int56(uint56(WINDOW));
-        WoodV3TwapFeed floored = _feed(address(new SeatedCumulativesPool(WOOD, WETH, 0, exact)));
-        // One short of TICK * WINDOW: truncation would answer TICK, the floor answers TICK - 1.
-        int56 inexact = int56(TICK) * int56(uint56(WINDOW)) - 1;
-        WoodV3TwapFeed remainder = _feed(address(new SeatedCumulativesPool(WOOD, WETH, 0, inexact)));
-
-        assertEq(_answer(remainder), _answer(floored));
-        assertLt(_answer(remainder), _answer(feed));
+    /// @notice A negative mean tick with a remainder floors: -136333.4 answers tick -136334.
+    function test_floorsANegativeMeanTick() public {
+        // 1000 s at -136339 and 2600 s at -136332. Truncation would answer 360,205.
+        assertApproxEqAbs(_answer(_seated(WOOD, WETH, -490_802_200)), 360_169, 1);
     }
 
-    /// @notice `updatedAt` is the read time: nothing has to be called for the answer to stay fresh.
+    /// @notice A positive mean tick with a remainder truncates: the live ordering, WOOD as token1.
+    function test_truncatesAPositiveMeanTick() public {
+        // 134892.06: one tick up answers 415,993 and one tick down 416,076.
+        assertApproxEqAbs(_answer(_seated(WETH, WOOD, int256(134_892) * 3600 + 200)), 416_034, 1);
+    }
+
+    /// @notice Ticks whose sqrt ratio exceeds 128 bits price correctly with WOOD as token0.
+    function test_pricesTicksAboveThe128BitSqrtRatio_woodToken0() public {
+        int24[3] memory ticks = [int24(443_636), 443_637, 500_000];
+        uint256[3] memory want = [
+            uint256(5533815213329311058932902868619),
+            5534368594850643990038796158906,
+            1551528244611720291467448567639037
+        ];
+        for (uint256 i = 0; i < ticks.length; i++) {
+            uint256 answer = _answer(_seated(WOOD, WETH, int256(ticks[i]) * 3600));
+            assertApproxEqRel(answer, want[i], HUNDREDTH_OF_A_TICK);
+        }
+    }
+
+    /// @notice The same ticks price correctly through the reciprocal, with WOOD as token1.
+    function test_pricesTicksAboveThe128BitSqrtRatio_woodToken1() public {
+        ethUsd.setAnswer(1e30); // keeps the reciprocal above zero at 8 decimals
+        int24[3] memory ticks = [int24(443_636), 443_637, 500_000];
+        uint256[3] memory want = [uint256(54212146310), 54206725638, 193357743];
+        for (uint256 i = 0; i < ticks.length; i++) {
+            uint256 answer = _answer(_seated(WETH, WOOD, int256(ticks[i]) * 3600));
+            assertApproxEqRel(answer, want[i], HUNDREDTH_OF_A_TICK);
+        }
+    }
+
+    /// @notice A very negative tick keeps full precision: the 192-bit path, not the 128-bit one.
+    function test_keepsPrecisionAtAVeryNegativeTick() public {
+        uint256 answer = _answer(_seated(WETH, WOOD, int256(-800_000) * 3600));
+        assertApproxEqRel(answer, 16555516896855108776054083970761486128801599337, HUNDREDTH_OF_A_TICK);
+    }
+
+    /// @notice An ETH/USD feed of 6 or of 18 decimals gives the same answer as one of 8.
+    function test_normalisesTheEthFeedDecimals() public {
+        ethUsd = new MockAggregatorV3(6, 3000e6);
+        assertApproxEqAbs(_answer(_feed(address(pool))), ANSWER_X8, 1);
+
+        ethUsd = new MockAggregatorV3(18, 3000e18);
+        assertApproxEqAbs(_answer(_feed(address(pool))), ANSWER_X8, 1);
+    }
+
+    /// @notice `updatedAt` is the read time: the pool leg needs no call to stay fresh.
     function test_updatedAtIsTheReadTime() public {
         vm.warp(vm.getBlockTimestamp() + 10 days);
         ethUsd.setUpdatedAt(vm.getBlockTimestamp());
@@ -123,7 +170,7 @@ contract WoodV3TwapFeedTest is WoodV3TwapFeedFixture {
     /// @notice In-range liquidity below the floor is refused; exactly the floor answers.
     function test_revertsBelowTheLiquidityFloor() public {
         pool.setLiquidity(MIN_V3_LIQUIDITY);
-        assertApproxEqRel(_answer(feed), ANSWER_X8, 0.001e18);
+        assertApproxEqAbs(_answer(feed), ANSWER_X8, 1);
 
         pool.setLiquidity(MIN_V3_LIQUIDITY - 1);
         vm.expectRevert(WoodV3TwapFeed.PriceUnavailable.selector);
@@ -134,15 +181,21 @@ contract WoodV3TwapFeedTest is WoodV3TwapFeedFixture {
     function test_revertsOnAStaleEthLeg() public {
         uint256 published = vm.getBlockTimestamp();
         vm.warp(published + ETH_MAX_AGE);
-        assertApproxEqRel(_answer(feed), ANSWER_X8, 0.001e18);
+        assertApproxEqAbs(_answer(feed), ANSWER_X8, 1);
 
         vm.warp(published + ETH_MAX_AGE + 1);
         vm.expectRevert(WoodV3TwapFeed.PriceUnavailable.selector);
         feed.latestRoundData();
     }
 
-    /// @notice A non-positive ETH/USD answer is refused.
-    function test_revertsOnANonPositiveEthAnswer() public {
+    /// @notice An ETH/USD round dated in the future reads as age zero, not as an underflow.
+    function test_answersOnAFutureDatedEthRound() public {
+        ethUsd.setUpdatedAt(vm.getBlockTimestamp() + 100);
+        assertApproxEqAbs(_answer(feed), ANSWER_X8, 1);
+    }
+
+    /// @notice A negative ETH/USD answer is refused before it is cast.
+    function test_revertsOnANegativeEthAnswer() public {
         ethUsd.setAnswer(-1);
         vm.expectRevert(WoodV3TwapFeed.PriceUnavailable.selector);
         feed.latestRoundData();
@@ -155,11 +208,57 @@ contract WoodV3TwapFeedTest is WoodV3TwapFeedFixture {
         feed.latestRoundData();
     }
 
+    /// @notice A price that rounds to zero at 8 decimals is unavailable, not zero.
+    function test_revertsWhenThePriceRoundsToZero() public {
+        WoodV3TwapFeed dust = _feed(address(_newPool(WOOD, WETH, -800_000)));
+        vm.expectRevert(WoodV3TwapFeed.PriceUnavailable.selector);
+        dust.latestRoundData();
+    }
+
+    /// @notice A mean tick one below the V3 minimum is unavailable.
+    function test_revertsOnAMeanTickBelowTheTickRange() public {
+        WoodV3TwapFeed below = _seated(WOOD, WETH, int256(-887_273) * 3600);
+        vm.expectRevert(WoodV3TwapFeed.PriceUnavailable.selector);
+        below.latestRoundData();
+    }
+
+    /// @notice A mean tick one above the V3 maximum is unavailable.
+    function test_revertsOnAMeanTickAboveTheTickRange() public {
+        WoodV3TwapFeed above = _seated(WOOD, WETH, int256(887_273) * 3600);
+        vm.expectRevert(WoodV3TwapFeed.PriceUnavailable.selector);
+        above.latestRoundData();
+    }
+
+    /// @notice A pool whose ring target is below `window + 1` is refused; exactly that deploys.
+    function test_constructor_refusesARingShorterThanTheWindow() public {
+        _feed(address(new SeatedCumulativesPool(WOOD, WETH, 0, RING)));
+
+        address short = address(new SeatedCumulativesPool(WOOD, WETH, 0, RING - 1));
+        vm.expectRevert(WoodV3TwapFeed.RingTooShort.selector);
+        _feed(short);
+    }
+
+    /// @notice A window no V3 ring can hold (above 65,534 seconds) is refused.
+    function test_constructor_refusesAWindowAboveTheRingCeiling() public {
+        address full = address(new SeatedCumulativesPool(WOOD, WETH, 0, type(uint16).max));
+        new WoodV3TwapFeed(full, WOOD, WETH, address(ethUsd), ETH_MAX_AGE, 65_534, MIN_V3_LIQUIDITY);
+
+        vm.expectRevert(WoodV3TwapFeed.RingTooShort.selector);
+        new WoodV3TwapFeed(full, WOOD, WETH, address(ethUsd), ETH_MAX_AGE, 65_535, MIN_V3_LIQUIDITY);
+    }
+
     /// @notice A pool holding anything other than exactly {WOOD, WETH} is refused at construction.
     function test_constructor_refusesAPoolOfOtherTokens() public {
-        address other = _newPoolAddress(WOOD, makeAddr("notWeth"));
-        vm.expectRevert(WoodV3TwapFeed.InvalidParameter.selector);
-        _feed(other);
+        address other = makeAddr("other");
+        address[3] memory pools = [
+            address(_newPool(WOOD, other, TICK)),
+            address(_newPool(other, WETH, TICK)),
+            address(_newPool(WETH, WETH, TICK))
+        ];
+        for (uint256 i = 0; i < pools.length; i++) {
+            vm.expectRevert(WoodV3TwapFeed.InvalidParameter.selector);
+            _feed(pools[i]);
+        }
     }
 
     /// @notice A window under `MIN_WINDOW` is refused; exactly `MIN_WINDOW` deploys.
@@ -186,101 +285,118 @@ contract WoodV3TwapFeedTest is WoodV3TwapFeedFixture {
         vm.expectRevert(WoodV3TwapFeed.InvalidParameter.selector);
         new WoodV3TwapFeed(address(pool), WOOD, WETH, wide, ETH_MAX_AGE, WINDOW, MIN_V3_LIQUIDITY);
     }
-
-    /// @notice A price that rounds to zero at 8 decimals is unavailable, not zero.
-    function test_revertsWhenThePriceRoundsToZero() public {
-        WoodV3TwapFeed dust = _feed(address(_newPool(WOOD, WETH, -800_000)));
-        vm.expectRevert(WoodV3TwapFeed.PriceUnavailable.selector);
-        dust.latestRoundData();
-    }
-
-    /// @notice A mean tick outside the V3 tick range is unavailable.
-    function test_revertsOnAMeanTickOutsideTheTickRange() public {
-        int56 below = (int56(-887_272) - 1) * int56(uint56(WINDOW));
-        WoodV3TwapFeed out = _feed(address(new SeatedCumulativesPool(WOOD, WETH, 0, below)));
-        vm.expectRevert(WoodV3TwapFeed.PriceUnavailable.selector);
-        out.latestRoundData();
-    }
-
-    function _newPoolAddress(address token0, address token1) internal returns (address) {
-        return address(_newPool(token0, token1, TICK));
-    }
 }
 
-/// @notice The same feed against a REAL observation ring (v1 audit F2: the ring is
-///         written by any swapper, so `observe` is only as deep as the ring is sized).
+/// @notice The same feed against a real observation ring, written as fast as a pool can be.
 contract WoodV3TwapFeedRingTest is WoodV3TwapFeedFixture {
     MockUniswapV3PoolRing internal ring;
     WoodV3TwapFeed internal feed;
+    uint256 internal born;
     int24 internal wiggle;
 
     function setUp() public {
         vm.warp(1_800_000_000);
+        born = vm.getBlockTimestamp();
         ethUsd = new MockAggregatorV3(8, ETH_USD_X8);
         ring = new MockUniswapV3PoolRing(WOOD, WETH, TICK, V3_LIQUIDITY);
+        ring.increaseObservationCardinalityNext(RING);
         feed = _feed(address(ring));
     }
 
-    /// @dev The fastest a ring can be written: one tick-moving swap in every second.
-    function _spam(uint256 secs) internal {
+    /// @dev One tick-moving swap in every second, which is every write the pool allows.
+    function _spam(MockUniswapV3PoolRing pool, uint256 secs) internal {
         for (uint256 i = 0; i < secs; i++) {
             vm.warp(vm.getBlockTimestamp() + 1);
             wiggle = wiggle == 0 ? int24(1) : int24(0);
-            ring.swap(TICK + wiggle);
+            pool.swap(TICK + wiggle);
         }
         ethUsd.setUpdatedAt(vm.getBlockTimestamp());
     }
 
-    /// @notice A ring with one slot per second of the window cannot be evicted by swap spam.
-    function test_aRingOfOneSlotPerWindowSecondSurvivesPerSecondSwaps() public {
-        ring.increaseObservationCardinalityNext(uint16(WINDOW) + 1);
-        _spam(3 * uint256(WINDOW));
+    /// @notice A ring of `window + 1` slots still serves the window after three windows of spam.
+    function test_aRingOfWindowPlusOneSurvivesPerSecondSwaps() public {
+        _spam(ring, 3 * uint256(WINDOW));
 
-        assertApproxEqRel(_answer(feed), ANSWER_X8, 0.001e18);
+        assertEq(ring.writes(), 3 * uint256(WINDOW), "every second wrote");
+        // Half the window sits one tick up, so the mean floors to TICK.
+        assertApproxEqAbs(_answer(feed), ANSWER_X8, 1);
     }
 
-    /// @notice Control for the test above: the same spam evicts a ring sized below the window.
-    function test_control_perSecondSwapsEvictAnUndersizedRing() public {
-        ring.increaseObservationCardinalityNext(uint16(WINDOW) / 2);
-        _spam(3 * uint256(WINDOW));
+    /// @notice Control: the same spam evicts a ring of exactly `window` slots, which the feed refuses.
+    function test_control_perSecondSwapsEvictARingOfWindowSlots() public {
+        MockUniswapV3PoolRing short = new MockUniswapV3PoolRing(WOOD, WETH, TICK, V3_LIQUIDITY);
+        short.increaseObservationCardinalityNext(RING - 1);
+        _spam(short, 3 * uint256(WINDOW));
 
+        uint32[] memory secondsAgos = new uint32[](2);
+        secondsAgos[0] = WINDOW;
         vm.expectRevert(bytes("OLD"));
-        feed.latestRoundData();
+        short.observe(secondsAgos);
+
+        vm.expectRevert(WoodV3TwapFeed.RingTooShort.selector);
+        _feed(address(short));
     }
 
-    /// @notice After the ring is grown the feed answers once its oldest observation is a window old.
+    /// @notice The feed starts answering exactly one window after the ring's oldest observation.
     function test_answersAWindowAfterTheOldestObservation() public {
-        ring.increaseObservationCardinalityNext(uint16(WINDOW) + 1);
-        _spam(uint256(WINDOW) - 1);
+        _spam(ring, uint256(WINDOW) - 1);
         vm.expectRevert(bytes("OLD"));
         feed.latestRoundData();
 
-        _spam(1);
-        assertApproxEqRel(_answer(feed), ANSWER_X8, 0.001e18);
+        _spam(ring, 1);
+        assertApproxEqAbs(_answer(feed), ANSWER_X8, 1);
+    }
+
+    /// @notice Half the window at one tick and half a doubling higher answers their mean tick.
+    function test_averagesATickThatMovedMidWindow() public {
+        vm.warp(born + WINDOW / 2);
+        ring.swap(TICK + TICKS_PER_DOUBLING);
+        vm.warp(born + WINDOW);
+
+        // Mean tick -132873. Either half alone answers 359,989 or 719,979.
+        assertApproxEqAbs(_answer(feed), 509_106, 1);
     }
 }
 
-/// @notice The ledger prices WOOD off the feed with no keeper and a bound of one window.
+/// @notice The ledger prices WOOD off the feed: haircut, cap, and a dead pool as `NoWoodPrice`.
 contract WoodV3TwapFeedLedgerTest is WoodV3TwapFeedFixture {
-    uint256 internal constant CAP_X8 = 720_000; // 2x the feed
+    uint256 internal constant CAP_X8 = 720_000;
+    uint256 internal constant HAIRCUT_BPS = 8000;
 
-    /// @notice Ten days with nothing called: the ledger still resolves the haircut feed price.
-    function test_ledgerReadsWithNoKeeper() public {
+    MockUniswapV3Pool internal pool;
+    ExposureLedger internal ledger;
+
+    function setUp() public {
         vm.warp(1_800_000_000);
         ethUsd = new MockAggregatorV3(8, ETH_USD_X8);
-        WoodV3TwapFeed feed = _feed(address(_newPool(WOOD, WETH, TICK)));
+        pool = _newPool(WOOD, WETH, TICK);
+        WoodV3TwapFeed feed = _feed(address(pool));
 
-        address owner = makeAddr("owner");
-        ExposureLedger ledger = new ExposureLedger(owner, address(new TwapFeedSwood()), 7 days);
-        vm.startPrank(owner);
+        // The price path never calls sWOOD, so a codeless address stands in for it.
+        ledger = new ExposureLedger(address(this), makeAddr("swood"), 7 days);
         ledger.setWoodUsdPrice(CAP_X8);
-        ledger.setWoodFeed(address(feed), WINDOW);
-        vm.stopPrank();
+        ledger.setWoodHaircutBps(HAIRCUT_BPS);
+        ledger.setWoodFeed(address(feed), 1);
+    }
 
+    /// @notice Ten days on, with a max delay of one second, the ledger still reads the feed.
+    function test_ledgerReadsTheFeedWithNoKeeper() public {
         vm.warp(vm.getBlockTimestamp() + 10 days);
         ethUsd.setUpdatedAt(vm.getBlockTimestamp());
 
-        uint256 haircutBps = ledger.woodHaircutBps();
-        assertEq(ledger.woodPriceX8(), (_answer(feed) * haircutBps) / 10_000);
+        assertEq(ledger.woodPriceX8(), (ANSWER_X8 * HAIRCUT_BPS) / 10_000);
+    }
+
+    /// @notice A feed above the cap is priced at the cap.
+    function test_ledgerCapsAFeedAboveTheCap() public {
+        ledger.setWoodUsdPrice(100_000);
+        assertEq(ledger.woodPriceX8(), (100_000 * HAIRCUT_BPS) / 10_000);
+    }
+
+    /// @notice A pool that cannot serve the window reaches the ledger as `NoWoodPrice`.
+    function test_ledgerSeesAnUnservableWindowAsNoWoodPrice() public {
+        pool.setObserveReverts(true);
+        vm.expectRevert(IExposureLedger.NoWoodPrice.selector);
+        ledger.woodPriceX8();
     }
 }

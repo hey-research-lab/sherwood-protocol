@@ -13,21 +13,9 @@ interface IUniswapV3PoolSwap {
         returns (int256, int256);
 }
 
-/**
- * @title WoodV3TwapFeedForkTest
- * @notice `WoodV3TwapFeed` against the LIVE WOOD/WETH Uniswap V3 pool on Robinhood
- *         Chain mainnet (4663), with real swaps through the real pool bytecode.
- *
- *         On-chain facts (probed 2026-10-13): the pool is canonical Uniswap V3
- *         (its address is CREATE2 of the canonical init code hash under factory
- *         0xE51960f1…), WETH is token0, `observationCardinality` is 1, and the
- *         chain mints about 10 blocks per `block.timestamp` second.
- *
- * @dev Skips when ROBINHOOD_RPC_URL is unset; excluded from default CI by the
- *      `test/integration/**` path filter. Run:
- *        set -a; source .env; set +a
- *        forge test --match-path "test/integration/WoodV3TwapFeedFork.t.sol" -vv
- */
+/// @notice `WoodV3TwapFeed` against the live WOOD/WETH V3 pool on chain 4663, with real swaps.
+/// @dev Needs ROBINHOOD_RPC_URL; outside CI's path filter. About 13 minutes: growing the ring
+///      reads every new slot over RPC.
 contract WoodV3TwapFeedForkTest is Test {
     address constant WOOD = 0xF8BC08092C06dB6148114DCf82AF881F1085f92b;
     address constant WETH = 0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73;
@@ -45,7 +33,6 @@ contract WoodV3TwapFeedForkTest is Test {
     uint160 constant MIN_SQRT_RATIO = 4295128739;
     uint160 constant MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342;
 
-    WoodV3TwapFeed internal feed;
     bool internal wethIsToken0;
 
     function _fork() internal returns (bool) {
@@ -57,10 +44,13 @@ contract WoodV3TwapFeedForkTest is Test {
         vm.createSelectFork(rpc);
         require(block.chainid == 4663, "not Robinhood mainnet");
         wethIsToken0 = IUniswapV3Pool(V3_POOL).token0() == WETH;
-        feed = new WoodV3TwapFeed(V3_POOL, WOOD, WETH, ETH_USD_FEED, ETH_USD_MAX_AGE, WINDOW, MIN_V3_LIQUIDITY);
         deal(WETH, address(this), 1_000e18);
         deal(WOOD, address(this), 100_000_000e18);
         return true;
+    }
+
+    function _newFeed() internal returns (WoodV3TwapFeed) {
+        return new WoodV3TwapFeed(V3_POOL, WOOD, WETH, ETH_USD_FEED, ETH_USD_MAX_AGE, WINDOW, MIN_V3_LIQUIDITY);
     }
 
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata) external {
@@ -94,21 +84,19 @@ contract WoodV3TwapFeedForkTest is Test {
         }
     }
 
-    function _slot0() internal view returns (uint160 sqrtPriceX96, uint16 index, uint16 cardinality) {
-        (sqrtPriceX96,, index, cardinality,,,) = IUniswapV3Pool(V3_POOL).slot0();
-    }
-
     /// @notice A ring of one slot per window second serves the window through two swaps per second.
     function test_fork_ringOfOneSlotPerSecondSurvivesSwapSpam() public {
         if (!_fork()) return;
+        (,, uint16 startIndex,,,,) = IUniswapV3Pool(V3_POOL).slot0();
         IUniswapV3Pool(V3_POOL).increaseObservationCardinalityNext(RING);
+        WoodV3TwapFeed feed = _newFeed();
 
         _spam(2 * uint256(WINDOW));
 
-        (uint160 sqrtPriceX96, uint16 index, uint16 cardinality) = _slot0();
+        (uint160 sqrtPriceX96,, uint16 index, uint16 cardinality,,,) = IUniswapV3Pool(V3_POOL).slot0();
         assertEq(cardinality, RING, "the ring reached its target");
-        // 14,400 swaps in 7,200 seconds: one observation per second, so the index wrapped once.
-        assertEq(index, (2 * uint256(WINDOW)) % RING, "one write per second, not per block");
+        // 14,400 swaps in 7,200 seconds: per-block writing would land on 14400 % RING.
+        assertEq(index, (startIndex + 2 * uint256(WINDOW)) % RING, "one write per second, not per block");
 
         (, int256 answer,, uint256 updatedAt,) = feed.latestRoundData();
         assertEq(updatedAt, vm.getBlockTimestamp());
@@ -122,15 +110,13 @@ contract WoodV3TwapFeedForkTest is Test {
         assertApproxEqRel(uint256(answer), spotX8, 0.02e18, "the hour's mean sits at spot");
     }
 
-    /// @notice Control: at the live cardinality of 1, any swap in the last hour makes the read `OLD`.
-    function test_fork_control_theLiveRingOfOneCannotServeTheWindow() public {
+    /// @notice Control: at the live ring target the feed refuses to deploy.
+    function test_fork_control_theLiveRingRefusesTheFeed() public {
         if (!_fork()) return;
-        (,, uint16 cardinality) = _slot0();
-        assertEq(cardinality, 1, "the live ring grew: re-read the header of this file");
+        (,,,, uint16 ringTarget,,) = IUniswapV3Pool(V3_POOL).slot0();
+        assertLe(ringTarget, WINDOW, "the live ring was grown: this control no longer applies");
 
-        _spam(3);
-
-        vm.expectRevert(bytes("OLD"));
-        feed.latestRoundData();
+        vm.expectRevert(WoodV3TwapFeed.RingTooShort.selector);
+        _newFeed();
     }
 }
