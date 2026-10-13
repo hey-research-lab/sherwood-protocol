@@ -32,10 +32,11 @@ contract ProtocolFeeRouter is Ownable2Step, ReentrancyGuard {
 
     error InvalidAllocationSum(uint256 sum);
     error TooManyAllocations(uint256 count);
-    error ZeroTarget();
+    error InvalidTarget(address target);
     error ZeroBps(address target);
     error DuplicateTarget(address target);
     error ZeroAddress();
+    error RenounceDisabled();
 
     constructor(address owner_) Ownable(owner_) {}
 
@@ -46,7 +47,7 @@ contract ProtocolFeeRouter is Ownable2Step, ReentrancyGuard {
         uint256 sum;
         for (uint256 i; i < n; ++i) {
             Allocation calldata a = allocations_[i];
-            if (a.target == address(0)) revert ZeroTarget();
+            if (a.target == address(0) || a.target == address(this)) revert InvalidTarget(a.target);
             if (a.bps == 0) revert ZeroBps(a.target);
             for (uint256 j; j < i; ++j) {
                 if (allocations_[j].target == a.target) revert DuplicateTarget(a.target);
@@ -85,6 +86,11 @@ contract ProtocolFeeRouter is Ownable2Step, ReentrancyGuard {
         if (to == address(0)) revert ZeroAddress();
         IERC20(token).safeTransfer(to, amount);
         emit Rescued(token, to, amount);
+    }
+
+    /// @notice Disabled: an ownerless router in hold mode would strand every fee it ever receives.
+    function renounceOwnership() public pure override {
+        revert RenounceDisabled();
     }
 
     function allocations() external view returns (Allocation[] memory) {

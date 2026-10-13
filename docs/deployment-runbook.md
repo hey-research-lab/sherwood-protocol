@@ -83,8 +83,8 @@ Nothing is read from the environment. Every number comes from
 5. **The Safe's turn.** `acceptOwnership()` on `ProtocolConfig`, `TierRegistry`,
    `ExposureLedger`, `ChallengeGame` and `TokenCourt` (the one-step contracts —
    beacon, factory, GuardianRegistry, sWOOD, StrategyFactory — are already
-   transferred). Then re-point `setProtocolFeeRecipient` and
-   `setGuardiansFeeRecipient` off the deployer placeholder, seed the slash-appeal
+   transferred). Then re-point `setGuardiansFeeRecipient` off the deployer
+   placeholder (the protocol leg is already on the fee router, see below), seed the slash-appeal
    reserve (`approve` + `registry.fundSlashAppealReserve`), and configure the
    Zodiac Delay module with the asymmetry the spec requires: raises delayed,
    drops immediate.
@@ -94,6 +94,13 @@ Nothing is read from the environment. Every number comes from
    later: set `OWNER_MULTISIG` to the real owner (a contract), call
    `factory.setCreationFee(WOOD, 1_000_000e18, <owner>)` from the deployer, re-run
    `DeployAll` (it sends only the transfers), then do this step.
+   **Protocol fee router (SHE-239), right after run 2 and before any proposal.**
+   Run `DeployProtocolFeeRouter.s.sol` with `--broadcast` from the deployer, passing
+   the Safe. Then call `setProtocolFeeRecipient(PROTOCOL_FEE_ROUTER)` from the
+   ProtocolConfig owner (the deployer while the handoff is deferred). Each proposal
+   snapshots its recipient at propose time, so a proposal created first pays the
+   deployer for good. Validation accepts the router, so the handoff re-run still
+   passes; never point the recipient back at the deployer for it.
 
    `script/robinhood-mainnet/deploy.sh` wraps steps 2 to 6 and verifies the
    sources on Blockscout; run it once per stage.

@@ -316,9 +316,9 @@ contract DeployAll is
         console.log("RUNBOOK: ExposureLedger, ChallengeGame AND TokenCourt.");
         // BOTH FEE LEGS PAY THE DEPLOYER KEY until the Safe re-points them: a zero recipient
         // is worse (it folds the leg into the agent's remainder silently), so they are seeded.
-        // The protocol leg goes to ProtocolFeeRouter (SHE-239), seated before the first proposal.
-        console.log("RUNBOOK: then setProtocolFeeRecipient(PROTOCOL_FEE_ROUTER) and");
-        console.log("RUNBOOK: setGuardiansFeeRecipient(guardian payout address).");
+        // The protocol leg goes to ProtocolFeeRouter (SHE-239), seated right after run 2, before any proposal.
+        console.log("RUNBOOK: protocol leg -> PROTOCOL_FEE_ROUTER (DeployProtocolFeeRouter), before any proposal;");
+        console.log("RUNBOOK: then, from the Safe, setGuardiansFeeRecipient(guardian payout address).");
         // NOT handed off: `Create3Factory.deploy` is `onlyOwner`, so the deployer key keeps the
         // right to mint at any UNUSED salt in this namespace. Used salts already hold code.
         console.log("RUNBOOK: the deployer key KEEPS Create3Factory ownership: %s", s.create3Factory);

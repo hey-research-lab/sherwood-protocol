@@ -120,7 +120,16 @@ contract ProtocolFeeRouterTest is Test {
     function test_setAllocationsRejectsAZeroTarget() public {
         ProtocolFeeRouter.Allocation[] memory a = _one(address(0));
         vm.prank(safe);
-        vm.expectRevert(ProtocolFeeRouter.ZeroTarget.selector);
+        vm.expectRevert(abi.encodeWithSelector(ProtocolFeeRouter.InvalidTarget.selector, address(0)));
+        router.setAllocations(a);
+    }
+
+    /// @notice The router cannot be its own leg: that share would loop back and re-split forever.
+    function test_setAllocationsRejectsTheRouterItself() public {
+        ProtocolFeeRouter.Allocation[] memory a = _three(4000, 4000, 2000);
+        a[1].target = address(router);
+        vm.prank(safe);
+        vm.expectRevert(abi.encodeWithSelector(ProtocolFeeRouter.InvalidTarget.selector, address(router)));
         router.setAllocations(a);
     }
 
@@ -146,7 +155,7 @@ contract ProtocolFeeRouterTest is Test {
         uint256 n = router.MAX_ALLOCATIONS() + 1;
         ProtocolFeeRouter.Allocation[] memory a = new ProtocolFeeRouter.Allocation[](n);
         for (uint256 i; i < n; ++i) {
-            a[i] = _alloc(address(uint160(0x1000 + i)), 1);
+            a[i] = _alloc(makeAddr(vm.toString(i)), 1);
         }
         vm.prank(safe);
         vm.expectRevert(abi.encodeWithSelector(ProtocolFeeRouter.TooManyAllocations.selector, n));
@@ -269,6 +278,14 @@ contract ProtocolFeeRouterTest is Test {
         vm.prank(safe);
         vm.expectRevert(ProtocolFeeRouter.ZeroAddress.selector);
         router.rescue(address(usdg), address(0), 7e6);
+    }
+
+    /// @notice The owner cannot renounce, so a hold-mode balance can never become ownerless.
+    function test_renounceOwnershipIsDisabled() public {
+        vm.prank(safe);
+        vm.expectRevert(ProtocolFeeRouter.RenounceDisabled.selector);
+        router.renounceOwnership();
+        assertEq(router.owner(), safe);
     }
 
     /// @notice Ownership moves only when the new owner accepts.

@@ -145,15 +145,33 @@ governance change never affects an in-flight strategy.
 ## Protocol fee router
 
 On mainnet `protocolFeeRecipient` is `ProtocolFeeRouter` (`src/ProtocolFeeRouter.sol`),
-not a team wallet. Fees accrue in the router. The owner (the Safe, then the
-foundation) sets allocations, a list of `(target, bps)` legs summing to 10,000,
-and anyone can call `distribute(token)` to forward the router's balance across them.
-It launches with no allocations, so fees are held and nothing leaves. The router has
-no swap or burn logic. If a fee transfer to it fails, anyone can call
-`claimEscrowedFees(governor, vault, token)` to pull the escrowed amount into the
-router. The governor snapshots the recipient at propose, so the router must be
-seated before the first proposal. The guardian leg (`guardiansFeeRecipient`) is a
-separate path (SHE-399).
+not a team wallet. The router has no swap or burn logic.
+
+- **Allocations.** The owner (the Safe, then the foundation) sets a list of
+  `(target, bps)` legs summing to 10,000. Anyone can call `distribute(token)` to send
+  the router's whole balance of that token across the legs.
+- **Hold mode.** The router launches with no allocations, so `distribute` sends
+  nothing. Hold mode limits `distribute`, not the owner.
+- **Owner powers.** `rescue` moves any token, fee assets included, to any address,
+  in any mode. `setAllocations` takes effect immediately; there is no timelock.
+  `renounceOwnership` is disabled.
+- **Backlog follows the live allocations.** Whatever sits in the router goes to the
+  allocations live when `distribute` runs, and anyone can run it before a queued
+  `setAllocations` lands. Bundle `distribute` (or `rescue`) and `setAllocations` in
+  one Safe multisend.
+- **A leg that cannot receive blocks that token.** If a target is frozen by the
+  token issuer, `distribute` for that token reverts, and so does any
+  `distributeMany` that includes it, until the owner replaces the leg. The backlog
+  then goes to the new legs. Keepers should call `distribute` per token.
+- **Escrow.** If a fee transfer to the router fails, the governor escrows it, and
+  anyone can call `claimEscrowedFees(governor, vault, token)` to pull it into the
+  router. The claim reverts while that vault has an active proposal. The escrowed
+  amount can also be capped by `spendableFee`.
+- **When to seat it.** The governor snapshots the recipient at propose. Seat the
+  router as soon as it is minted, before any proposal; a proposal created earlier
+  pays the old recipient for good. DeployAll's validation accepts the router, so a
+  later handoff run still passes. Never re-point to the deployer to get a run through.
+- **Guardian leg.** `guardiansFeeRecipient` is a separate path (SHE-399).
 
 ## Co-proposer splits
 

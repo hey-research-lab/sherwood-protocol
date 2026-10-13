@@ -171,11 +171,30 @@ for leg in protocolFeeRecipient guardiansFeeRecipient; do
   R=$(call "$CONFIG" "$leg()(address)")
   if [ -n "$R" ] && [ "$R" != "$ZERO" ]; then ok "config.$leg non-zero" "$R"; else bad "config.$leg non-zero" "$R"; fi
 done
-# Once the fee router is recorded, it must sit at its salt and the protocol leg must pay it (SHE-239).
-ROUTER=$(a PROTOCOL_FEE_ROUTER)
-if [ -n "$ROUTER" ]; then
-  check "PROTOCOL_FEE_ROUTER" "$ROUTER" "$(derive protocol-fee-router)"
-  check "config.protocolFeeRecipient == router" "$(call "$CONFIG" 'protocolFeeRecipient()(address)')" "$ROUTER"
+echo; echo "── Protocol fee router (SHE-239: the protocol leg must not pay a team key) ──"
+ROUTER=$(derive protocol-fee-router)
+PFR=$(call "$CONFIG" 'protocolFeeRecipient()(address)')
+if [ -z "$ROUTER" ]; then
+  bad "PROTOCOL_FEE_ROUTER (derived)" "the factory did not answer addressOf"
+elif [ "$(cast code "$ROUTER" --rpc-url "$RPC" 2>/dev/null)" = "0x" ]; then
+  if [ -n "$(a PROTOCOL_FEE_ROUTER)" ]; then
+    bad "PROTOCOL_FEE_ROUTER holds code" "book names $(a PROTOCOL_FEE_ROUTER), nothing at $ROUTER"
+  else
+    printf '  \033[33mWARN\033[0m %-46s %s\n' "fee router not deployed" "protocol leg pays $PFR"
+  fi
+else
+  book_matches "PROTOCOL_FEE_ROUTER" PROTOCOL_FEE_ROUTER "$ROUTER"
+  check "router runtime == this repo's ProtocolFeeRouter" \
+    "$(cast keccak "$(cast code "$ROUTER" --rpc-url "$RPC")")" \
+    "$(cast keccak "$(forge inspect ProtocolFeeRouter deployedBytecode 2>/dev/null | tail -1)")"
+  check "config.protocolFeeRecipient == router" "$PFR" "$ROUTER"
+  RO=$(call "$ROUTER" 'owner()(address)')
+  if [ -n "$RO" ] && [ "$(lc "$RO")" != "$(lc "$DEPLOYER")" ] && [ "$(cast code "$RO" --rpc-url "$RPC" 2>/dev/null)" != "0x" ]; then
+    ok "router.owner is a contract, not the deployer" "$RO"
+  else
+    bad "router.owner is a contract, not the deployer" "$RO"
+  fi
+  check "router.pendingOwner (none)" "$(call "$ROUTER" 'pendingOwner()(address)')" "$ZERO"
 fi
 
 echo; echo "── Strategy templates (the allowlist IS _templateKeys) ──"
