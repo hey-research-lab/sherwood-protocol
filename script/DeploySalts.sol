@@ -43,4 +43,7 @@ library DeploySalts {
     bytes32 internal constant PROPOSER_BOND_ESCROW = keccak256("sherwood.robinhood.v1.proposer-bond-escrow");
     bytes32 internal constant CHALLENGE_GAME = keccak256("sherwood.robinhood.v1.challenge-game");
     bytes32 internal constant TOKEN_COURT = keccak256("sherwood.robinhood.v1.token-court");
+
+    // Fees (SHE-239). Minted after run 2 by DeployProtocolFeeRouter, outside the ceremony.
+    bytes32 internal constant PROTOCOL_FEE_ROUTER = keccak256("sherwood.robinhood.v1.protocol-fee-router");
 }

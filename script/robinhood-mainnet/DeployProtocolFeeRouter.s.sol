@@ -2,15 +2,15 @@
 pragma solidity 0.8.28;
 
 import {console} from "forge-std/Script.sol";
-import {VmSafe} from "forge-std/Vm.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ScriptBase} from "../ScriptBase.sol";
+import {DeploySalts} from "../DeploySalts.sol";
 import {ProtocolConfig} from "../../src/ProtocolConfig.sol";
 import {ProtocolFeeRouter} from "../../src/ProtocolFeeRouter.sol";
 
 /// @title  DeployProtocolFeeRouter
-/// @notice Deploys the protocol-leg fee router (SHE-239), owned by the Safe and in hold mode, records it
-///         as `PROTOCOL_FEE_ROUTER`, and prints the `setProtocolFeeRecipient` call for the config owner.
+/// @notice Mints the protocol-leg fee router (SHE-239) through CREATE3, owned by the Safe and in hold
+///         mode, records it as `PROTOCOL_FEE_ROUTER`, and prints the `setProtocolFeeRecipient` call.
 /// @dev    Seat it AFTER DeployAll run 2 (whose validation pins the recipient to the deployer) and BEFORE
 ///         the first proposal: the governor snapshots the recipient at propose.
 ///
@@ -21,16 +21,16 @@ import {ProtocolFeeRouter} from "../../src/ProtocolFeeRouter.sol";
 ///   book names the deployer there.
 contract DeployProtocolFeeRouter is ScriptBase {
     function run(address safe) external returns (ProtocolFeeRouter router) {
-        address existing = _optionalAddress("PROTOCOL_FEE_ROUTER");
-        require(existing == address(0) || existing.code.length == 0, "PROTOCOL_FEE_ROUTER already deployed");
+        address deployer = _readAddress("DEPLOYER");
         ProtocolConfig config = ProtocolConfig(_readAddress("PROTOCOL_CONFIG"));
 
         vm.startBroadcast();
+        // `Create3Factory.deploy` is onlyOwner; fail here rather than with the factory's bare revert.
+        require(msg.sender == deployer, "broadcaster != DEPLOYER in the address book");
         router = deploy(safe);
         vm.stopBroadcast();
 
-        // A dry run's address is a simulation, so only a broadcast writes the book.
-        if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast)) _patchAddress("PROTOCOL_FEE_ROUTER", address(router));
+        _patchAddress("PROTOCOL_FEE_ROUTER", address(router));
 
         console.log("ProtocolFeeRouter:", address(router));
         console.log("owner (Safe):", safe);
@@ -40,10 +40,12 @@ contract DeployProtocolFeeRouter is ScriptBase {
         console.log("current protocolFeeRecipient:", config.protocolFeeRecipient());
     }
 
-    /// @notice The router, owned by `safe`, with no allocations.
+    /// @notice The router at its salt, owned by `safe`, with no allocations.
+    /// @dev The caller must own the Create3Factory (`_c3Factory` bootstraps it at `msg.sender`).
     function deploy(address safe) public returns (ProtocolFeeRouter router) {
         require(safe.code.length != 0, "DeployProtocolFeeRouter: the Safe must be a contract, not an EOA");
-        router = new ProtocolFeeRouter(safe);
+        bytes memory initcode = abi.encodePacked(type(ProtocolFeeRouter).creationCode, abi.encode(safe));
+        router = ProtocolFeeRouter(_c3(_c3Factory(msg.sender), DeploySalts.PROTOCOL_FEE_ROUTER, initcode));
         require(router.owner() == safe, "DeployProtocolFeeRouter: owner is not the Safe");
         require(router.allocations().length == 0, "DeployProtocolFeeRouter: not in hold mode");
     }

@@ -171,9 +171,12 @@ for leg in protocolFeeRecipient guardiansFeeRecipient; do
   R=$(call "$CONFIG" "$leg()(address)")
   if [ -n "$R" ] && [ "$R" != "$ZERO" ]; then ok "config.$leg non-zero" "$R"; else bad "config.$leg non-zero" "$R"; fi
 done
-# Once the fee router is recorded, the protocol leg must pay it (SHE-239).
+# Once the fee router is recorded, it must sit at its salt and the protocol leg must pay it (SHE-239).
 ROUTER=$(a PROTOCOL_FEE_ROUTER)
-[ -z "$ROUTER" ] || check "config.protocolFeeRecipient == router" "$(call "$CONFIG" 'protocolFeeRecipient()(address)')" "$ROUTER"
+if [ -n "$ROUTER" ]; then
+  check "PROTOCOL_FEE_ROUTER" "$ROUTER" "$(derive protocol-fee-router)"
+  check "config.protocolFeeRecipient == router" "$(call "$CONFIG" 'protocolFeeRecipient()(address)')" "$ROUTER"
+fi
 
 echo; echo "── Strategy templates (the allowlist IS _templateKeys) ──"
 APPROVED=0
