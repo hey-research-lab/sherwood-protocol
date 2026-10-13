@@ -61,7 +61,8 @@ contract WoodV3TwapFeed {
         // A pool holding anything other than exactly {WOOD, WETH} is refused.
         if (!((t0 == wood_ && t1 == weth_) || (t0 == weth_ && t1 == wood_))) revert InvalidParameter();
 
-        // The target only grows, so a ring that passes here cannot be evicted later.
+        // The target only grows, so the ring ends at `window + 1` slots or more. One that
+        // already wrapped at a smaller size still evicts until it expands (SHE-398).
         (,,,, uint16 ringTarget,,) = IUniswapV3Pool(pool_).slot0();
         if (ringTarget <= window_) revert RingTooShort();
 

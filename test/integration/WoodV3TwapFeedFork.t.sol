@@ -84,7 +84,7 @@ contract WoodV3TwapFeedForkTest is Test {
         }
     }
 
-    /// @notice A ring of one slot per window second serves the window through two swaps per second.
+    /// @notice A ring grown past the window serves it through two swaps in every second.
     function test_fork_ringOfOneSlotPerSecondSurvivesSwapSpam() public {
         if (!_fork()) return;
         (,, uint16 startIndex,,,,) = IUniswapV3Pool(V3_POOL).slot0();

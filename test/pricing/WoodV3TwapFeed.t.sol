@@ -105,7 +105,7 @@ contract WoodV3TwapFeedTest is WoodV3TwapFeedFixture {
         assertApproxEqAbs(_answer(feed), ANSWER_X8, 1);
     }
 
-    /// @notice A negative mean tick with a remainder floors: -136333.4 answers tick -136334.
+    /// @notice A negative mean tick with a remainder floors: -136333.94 answers tick -136334.
     function test_floorsANegativeMeanTick() public {
         // 1000 s at -136339 and 2600 s at -136332. Truncation would answer 360,205.
         assertApproxEqAbs(_answer(_seated(WOOD, WETH, -490_802_200)), 360_169, 1);
@@ -146,6 +146,15 @@ contract WoodV3TwapFeedTest is WoodV3TwapFeedFixture {
     function test_keepsPrecisionAtAVeryNegativeTick() public {
         uint256 answer = _answer(_seated(WETH, WOOD, int256(-800_000) * 3600));
         assertApproxEqRel(answer, 16555516896855108776054083970761486128801599337, HUNDREDTH_OF_A_TICK);
+    }
+
+    /// @notice A 30 minute feed observes and divides by its own window, not by an hour.
+    function test_answersOverAWindowOtherThanAnHour() public {
+        WoodV3TwapFeed halfHour =
+            new WoodV3TwapFeed(address(pool), WOOD, WETH, address(ethUsd), ETH_MAX_AGE, 30 minutes, MIN_V3_LIQUIDITY);
+
+        assertEq(halfHour.window(), 30 minutes);
+        assertApproxEqAbs(_answer(halfHour), ANSWER_X8, 1);
     }
 
     /// @notice An ETH/USD feed of 6 or of 18 decimals gives the same answer as one of 8.
@@ -245,6 +254,10 @@ contract WoodV3TwapFeedTest is WoodV3TwapFeedFixture {
 
         vm.expectRevert(WoodV3TwapFeed.RingTooShort.selector);
         new WoodV3TwapFeed(full, WOOD, WETH, address(ethUsd), ETH_MAX_AGE, 65_535, MIN_V3_LIQUIDITY);
+
+        // 65,536 + 1,800 truncates to 1,800 in 16 bits, which a one hour ring would pass.
+        vm.expectRevert(WoodV3TwapFeed.RingTooShort.selector);
+        new WoodV3TwapFeed(address(pool), WOOD, WETH, address(ethUsd), ETH_MAX_AGE, 67_336, MIN_V3_LIQUIDITY);
     }
 
     /// @notice A pool holding anything other than exactly {WOOD, WETH} is refused at construction.
@@ -264,6 +277,7 @@ contract WoodV3TwapFeedTest is WoodV3TwapFeedFixture {
     /// @notice A window under `MIN_WINDOW` is refused; exactly `MIN_WINDOW` deploys.
     function test_constructor_refusesAWindowBelowTheMinimum() public {
         uint32 min = feed.MIN_WINDOW();
+        assertEq(min, 30 minutes);
         new WoodV3TwapFeed(address(pool), WOOD, WETH, address(ethUsd), ETH_MAX_AGE, min, MIN_V3_LIQUIDITY);
 
         vm.expectRevert(WoodV3TwapFeed.InvalidParameter.selector);
@@ -353,7 +367,7 @@ contract WoodV3TwapFeedRingTest is WoodV3TwapFeedFixture {
         ring.swap(TICK + TICKS_PER_DOUBLING);
         vm.warp(born + WINDOW);
 
-        // Mean tick -132873. Either half alone answers 359,989 or 719,979.
+        // Mean tick -132873. Either half alone answers 359,989 or 719,991.
         assertApproxEqAbs(_answer(feed), 509_106, 1);
     }
 }
