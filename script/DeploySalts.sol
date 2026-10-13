@@ -37,6 +37,8 @@ library DeploySalts {
     // Pricing. Distinct salts so a fork book can never be mistaken for a mainnet feed.
     bytes32 internal constant WOOD_USD_FEED = keccak256("sherwood.robinhood.v1.wood-pool-feed");
     bytes32 internal constant FORK_WOOD_FEED = keccak256("sherwood.robinhood.v1.fork-wood-feed-fixture");
+    // SHE-398: the native V3 TWAP feed that replaces `WOOD_USD_FEED` at the ledger.
+    bytes32 internal constant WOOD_USD_TWAP_FEED = keccak256("sherwood.robinhood.v1.wood-v3-twap-feed");
 
     // Plan B / Plan D / TokenCourt
     bytes32 internal constant EXPOSURE_LEDGER = keccak256("sherwood.robinhood.v1.exposure-ledger");
