@@ -159,6 +159,40 @@ stakes 10k from itself and is never listed as an approving key.
 3. **Record** in the launch notes which address plays which role, each key's `stakedAt`, and `totalGuardianStake`. That timestamp starts the 30-day court maturation that gates unpausing filings, and with it general access.
 4. No fleet key approves until the per-vault lock cap (SHE-299) is live on the voters.
 
+## 1c. WOOD feed swap (SHE-398) — after run 2
+
+The ceremony wires `WoodPoolFeed` (24h stored snapshots, rolled by a keeper). The swap replaces it at the ledger with `WoodV3TwapFeed`: the WOOD/WETH V3 pool's own 1h mean tick times ETH/USD, with no keeper. Every step is `script/robinhood-mainnet/SwapWoodFeed.s.sol`; numbers come from `RobinhoodParams`, addresses from the book.
+
+1. **Grow the pool's observation ring** (any funded key; permissionless):
+   ```bash
+   forge script script/robinhood-mainnet/SwapWoodFeed.s.sol:SwapWoodFeed --sig "growRing()" \
+     --rpc-url robinhood --account <any key> --broadcast --slow
+   ```
+   It raises the ring target to 3,660 in four calls of at most 1,000 slots. Do not pass `--gas-estimate-multiplier 200`: 4663 caps a transaction at 32M gas and a call of 1,000 slots uses about 22M. Send the calls back to back, so the ring never wraps at an intermediate size.
+2. **Deploy the feed** (the deployer key, which owns the Create3Factory):
+   ```bash
+   forge script script/robinhood-mainnet/SwapWoodFeed.s.sol:SwapWoodFeed --sig "deployFeed()" \
+     --rpc-url robinhood --account sherwood-deployer --broadcast --slow
+   ```
+   Pre-flights: WOOD and WETH share a decimals count, the booked factory's `getPool` returns the pool, in-range liquidity is at or above `MIN_V3_LIQUIDITY`, ETH/USD is live, the ring target is at least `window + 1`, and the ring has not wrapped at a smaller size. The address is written to the book as `WOOD_USD_TWAP_FEED`. The feed answers one window after the pool's oldest observation.
+3. **Shadow run, two to three days.** Log both feeds and V2 spot, for example hourly:
+   ```bash
+   forge script script/robinhood-mainnet/SwapWoodFeed.s.sol:SwapWoodFeed --sig "compare()" \
+     --rpc-url robinhood | grep CSV >> wood-feed-shadow.csv
+   ```
+   Columns: time, old feed, new feed, V2 spot, all at 8 decimals; 0 is a feed that reverted. Keep rolling `WoodPoolFeed.update()` until the swap.
+4. **Swap** (the ledger owner):
+   ```bash
+   forge script script/robinhood-mainnet/SwapWoodFeed.s.sol:SwapWoodFeed --sig "swap()" \
+     --rpc-url robinhood --account sherwood-deployer --broadcast --slow
+   ```
+   It refuses unless the feed is the booked one, answers, and sits within 10% of V2 spot. Then it calls `setWoodFeed(feed, 1h)` and seats `woodUsdPriceX8` at 2x the feed's answer (the TWAP, not spot). The `maxDelay` is inert for this feed: its `updatedAt` is the read time.
+5. **Verify.** `RPC=<url> ./script/verify-robinhood.sh 4663` now also checks that the ledger reads the booked TWAP feed, the ring target, and that the cap is at most 2.5x the feed. Commit the book. Retire the keeper's `update()` job.
+
+Standing rule after the swap: the cap is static while WOOD moves. When the feed falls below `cap / 2.5`, lower the cap with `setWoodUsdPrice` to 2x the feed within a day.
+
+---
+
 ## 2. Per-syndicate seeding — required, and not part of any script
 
 Three risk parameters ship inert, and no deploy script can seed them: they live
@@ -217,8 +251,9 @@ Not one-time steps. Nothing below is enforced on-chain.
   price — seeded at or below market it binds permanently and pins every bond.
   Review monthly; lowering it is the emergency brake and is not rate-limited
   on-chain (rate limiting lives in a Zodiac module on the owner Safe).
-- **Call `WoodPoolFeed.update()` on a schedule** shorter than the `maxDelay`
-  passed to `setWoodFeed`. It is permissionless and a no-op when a pool is early
+- **Until the SHE-398 swap (§1c), call `WoodPoolFeed.update()` on a schedule**
+  shorter than the `maxDelay` passed to `setWoodFeed`. After the swap nothing has
+  to be called: `WoodV3TwapFeed` reads the pool's own ring. It is permissionless and a no-op when a pool is early
   or below its depth floor, so a failing keeper looks like nothing at all — and a
   stale feed is `NoWoodPrice`: block votes still land, but approve votes,
   `ChallengeGame.file`, and `propose` and `executeProposal` for any proposal

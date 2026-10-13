@@ -76,8 +76,19 @@ library RobinhoodParams {
     // How far above live spot the WOOD price cap is seated, bps. Both postures DERIVE the cap
     // from the pool at deploy time, so no measured price is ever committed here. Must land
     // inside the ceremony's [1.25x, 4x] band; the owner re-reviews the cap monthly after launch.
-    // 4x: the 24h two-pool TWAP is the manipulation control, and a tighter cap binds on an ordinary rally.
-    uint256 internal constant CAP_OVER_SPOT_BPS = 40_000;
+    // 2x (SHE-398, audit F-2): with the 50% haircut a fully pushed feed values stake at no more
+    // than its real worth. The cap is static while spot moves, so re-seat it when spot < cap / 2.5.
+    uint256 internal constant CAP_OVER_SPOT_BPS = 20_000;
+
+    // WoodV3TwapFeed (SHE-398). The ring holds one slot per second of the window plus a margin;
+    // 4663 caps a transaction at 32M gas, about 1,438 slots, so it grows 1,000 slots per call.
+    uint32 internal constant WOOD_TWAP_WINDOW = 1 hours;
+    uint16 internal constant WOOD_TWAP_RING = 3_660;
+    uint16 internal constant WOOD_TWAP_RING_GROW_PER_TX = 1_000;
+    // INERT for this feed: its `updatedAt` is the read time, so no value here can bind.
+    uint256 internal constant WOOD_TWAP_FEED_MAX_DELAY = 1 hours;
+    // The swap is refused while the feed's TWAP and the V2 pair's spot disagree by more than this.
+    uint256 internal constant MAX_FEED_SPOT_DEVIATION_BPS = 1_000;
 
     /// @notice TierRegistry launch set. Every CHAINLINK_<SYM>_USD_FEED and <SYM> (WETH for ETH) book key is
     ///         REQUIRED. A Solidity constant cannot hold an array, hence a pure accessor.

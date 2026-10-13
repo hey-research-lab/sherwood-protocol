@@ -309,6 +309,11 @@ commit; re-derive them if it moves. Values not listed here are read from
 | `MAX_PAIR_IDLE` | `:47` | 5 min | feed pre-flight: a pair idle past this never snapshots |
 | `KEEPER_CADENCE_SLACK` | `:48` | 2h | feeds `WOOD_FEED_MAX_DELAY` |
 | `WOOD_FEED_MAX_DELAY` | `:50` | window + 2h + 1 | `ledger.setWoodFeed` |
+| `WOOD_TWAP_WINDOW` | SHE-398 | 1h | `WoodV3TwapFeed` constructor |
+| `WOOD_TWAP_RING` | SHE-398 | 3,660 | pool ring target (`window + 1` is the floor the feed enforces) |
+| `WOOD_TWAP_RING_GROW_PER_TX` | SHE-398 | 1,000 | slots per `growRing` call; 4663 caps a transaction at 32M gas |
+| `WOOD_TWAP_FEED_MAX_DELAY` | SHE-398 | 1h | `ledger.setWoodFeed` at the swap; inert, the feed's `updatedAt` is the read time |
+| `MAX_FEED_SPOT_DEVIATION_BPS` | SHE-398 | 1,000 | the swap refuses while the TWAP and V2 spot differ by more |
 
 ### The three still marked `PLACEHOLDER — Ana to confirm`
 
@@ -336,7 +341,7 @@ cohort is willing to underwrite in a single approval — not a derivation. Owner
 with no bounds and read live on every propose, so it is a starting point: lowering it
 after launch is one Safe transaction and takes effect on the next proposal.
 
-**`CAP_OVER_SPOT_BPS` (`40_000` = 4x).** No WOOD price is committed. BOTH postures
+**`CAP_OVER_SPOT_BPS` (`20_000` = 2x; 4x until SHE-398).** No WOOD price is committed. The SHE-398 swap re-seats the cap at this multiple of the new feed's TWAP. BOTH postures
 DERIVE the cap at deploy time as `spot * CAP_OVER_SPOT_BPS / 10_000` from the live
 WOOD/WETH pair and the ETH/USD feed, and the ceremony still refuses anything outside
 `[1.25x, 4x]` of that same spot. The cap is the manipulation ceiling: `min(market,
