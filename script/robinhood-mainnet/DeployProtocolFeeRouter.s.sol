@@ -31,10 +31,9 @@ contract DeployProtocolFeeRouter is ScriptBase {
         address deployer = _readAddress("DEPLOYER");
         ProtocolConfig config = ProtocolConfig(_readAddress("PROTOCOL_CONFIG"));
 
-        vm.startBroadcast();
-        // `Create3Factory.deploy` is onlyOwner; fail here rather than with the factory's bare revert.
-        require(msg.sender == deployer, "broadcaster != DEPLOYER in the address book");
-        router = deploy(safe);
+        // Broadcast AS the book's deployer (the Create3Factory owner): forge refuses without its key.
+        vm.startBroadcast(deployer);
+        router = _deploy(safe, deployer);
         vm.stopBroadcast();
 
         // A dry run mints nothing on chain: never record or seat an address that holds no code yet.
@@ -55,21 +54,28 @@ contract DeployProtocolFeeRouter is ScriptBase {
     ///         must carry the pinned code and a non-deployer contract owner.
     /// @dev The caller must own the Create3Factory (`_c3Factory` bootstraps it at `msg.sender`).
     function deploy(address safe) public returns (ProtocolFeeRouter router) {
+        return _deploy(safe, msg.sender);
+    }
+
+    function _deploy(address safe, address deployer) internal returns (ProtocolFeeRouter router) {
         _requireSafe(safe);
         require(
             keccak256(type(ProtocolFeeRouter).runtimeCode) == DeploySalts.PROTOCOL_FEE_ROUTER_RUNTIME_HASH,
             "ProtocolFeeRouter runtime hash drift: re-record DeploySalts.PROTOCOL_FEE_ROUTER_RUNTIME_HASH"
         );
-        Create3Factory c3 = _c3Factory(msg.sender);
+        Create3Factory c3 = _c3Factory(deployer);
         bool fresh = _predict(c3, DeploySalts.PROTOCOL_FEE_ROUTER).code.length == 0;
         bytes memory initcode = abi.encodePacked(type(ProtocolFeeRouter).creationCode, abi.encode(safe));
         router = ProtocolFeeRouter(_c3(c3, DeploySalts.PROTOCOL_FEE_ROUTER, initcode));
 
+        // Code first: on adopt, `owner()` is only meaningful once the code is known to be the router.
+        _requireProtocolFeeRouter(address(router), deployer);
         if (fresh) {
             require(router.owner() == safe, "DeployProtocolFeeRouter: owner is not the Safe");
             require(router.allocations().length == 0, "DeployProtocolFeeRouter: not in hold mode");
+        } else if (router.owner() != safe) {
+            console.log("ADOPTED an existing router; its owner", router.owner(), "is NOT the Safe passed:", safe);
         }
-        _requireProtocolFeeRouter(address(router), msg.sender);
         console.log("router owner:", router.owner(), "allocations:", router.allocations().length);
     }
 

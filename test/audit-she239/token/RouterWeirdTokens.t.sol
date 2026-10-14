@@ -147,7 +147,7 @@ contract RouterWeirdTokensTest is Test {
 
     /// An EOA "governor" (no code) reverts: the high-level call checks extcodesize. Not a silent no-op.
     function test_claimAgainstANonContractReverts() public {
-        vm.expectRevert();
+        vm.expectRevert(bytes(""));
         router.claimEscrowedFees(makeAddr("eoa"), address(1), address(usdg));
     }
 

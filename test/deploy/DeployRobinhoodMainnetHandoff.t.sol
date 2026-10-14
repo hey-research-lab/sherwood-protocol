@@ -298,7 +298,16 @@ contract DeployRobinhoodMainnetHandoffTest is Test {
         vm.prank(address(harness));
         address router = harness.exposed_mintFeeRouter(address(harness));
         _seatRouter(router);
-        vm.expectRevert(bytes("fee router: owner must be the Safe, not the deployer"));
+        vm.expectRevert(bytes("fee router: owner must be a contract other than the deployer"));
+        harness.exposed_validate(d, address(harness), address(0), address(wood));
+    }
+
+    /// @notice A router owned by an EOA other than the deployer is refused: the owner must be a contract.
+    function test_validate_refusesAnEoaOwnedRouter() public {
+        vm.prank(address(harness));
+        address router = harness.exposed_mintFeeRouter(makeAddr("someone's wallet"));
+        _seatRouter(router);
+        vm.expectRevert(bytes("fee router: owner must be a contract other than the deployer"));
         harness.exposed_validate(d, address(harness), address(0), address(wood));
     }
 

@@ -48,8 +48,8 @@ library DeploySalts {
 
     // Fees (SHE-239). Minted after run 2 by DeployProtocolFeeRouter, outside the ceremony.
     bytes32 internal constant PROTOCOL_FEE_ROUTER = keccak256("sherwood.robinhood.v1.protocol-fee-router");
-    // keccak256(runtime code of ProtocolFeeRouter) under the pinned toolchain; asserted before the mint and by
-    // run-2 validation. Re-record it here when ProtocolFeeRouter.sol changes.
+    // keccak256(runtime code of ProtocolFeeRouter) under the pinned toolchain; asserted before the mint, and by
+    // DeployAll validation once the router is the protocol recipient. Re-record it when ProtocolFeeRouter.sol changes.
     bytes32 internal constant PROTOCOL_FEE_ROUTER_RUNTIME_HASH =
         0x1f7d5467ff00c0ccb398caebba5eb0120ffcee41902456cb8429a00daa4805af;
 }

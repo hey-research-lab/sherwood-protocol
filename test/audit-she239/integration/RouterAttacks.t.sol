@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import "./RouterIntegrationBase.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {BlacklistingERC20Mock} from "../../mocks/BlacklistingERC20Mock.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @dev A "governor" that, when the router calls it, tries every router entry point and a claim on
@@ -175,13 +176,16 @@ contract RouterAttacksTest is RouterIntegrationBase {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bytes32 perf = ISyndicateGovernor.PerformanceFeeCharged.selector;
         bytes32 settled = ISyndicateGovernor.ProposalSettled.selector;
+        bool found;
         for (uint256 i; i < logs.length; ++i) {
             assertTrue(logs[i].topics[0] != perf, "no performance fee on a flat proposal");
             if (logs[i].topics[0] == settled) {
+                found = true;
                 (int256 pnl,,) = abi.decode(logs[i].data, (int256, uint256, uint256));
                 assertEq(pnl, 0, "pnl exactly zero: the pre-execute claim did not leak into pnl");
             }
         }
+        assertTrue(found, "ProposalSettled was emitted");
     }
 
     /// @notice During Executed the claim reverts the WHOLE tx (VaultProposalActive), no partial state.
@@ -268,8 +272,9 @@ contract RouterAttacksTest is RouterIntegrationBase {
         vm.prank(safe);
         router.setAllocations(a);
         usdg.mint(address(router), 1000e6);
-        usdg.setBlacklisted(makeAddr("frozen"), true);
-        vm.expectRevert();
+        address frozen = makeAddr("frozen");
+        usdg.setBlacklisted(frozen, true);
+        vm.expectRevert(abi.encodeWithSelector(BlacklistingERC20Mock.Blacklisted.selector, frozen));
         router.distribute(address(usdg));
         assertEq(usdg.balanceOf(foundation), 0, "healthy leg also gets nothing");
         // Fees keep accruing into the router fine (settlement unaffected), recoverable by the Safe.
@@ -279,7 +284,7 @@ contract RouterAttacksTest is RouterIntegrationBase {
     ///         from the router". Harmless today because the router holds no authority anywhere except
     ///         as an escrow creditor. A codeless target simply reverts (high-level call extcodesize check).
     function test_I3_codelessGovernorReverts() public {
-        vm.expectRevert();
+        vm.expectRevert(bytes(""));
         router.claimEscrowedFees(makeAddr("eoa"), address(vault), address(usdg));
     }
 

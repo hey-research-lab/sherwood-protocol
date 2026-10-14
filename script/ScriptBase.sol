@@ -65,7 +65,10 @@ abstract contract ScriptBase is Script {
             router.codehash == DeploySalts.PROTOCOL_FEE_ROUTER_RUNTIME_HASH, "fee router: code is not the pinned router"
         );
         address owner_ = Ownable(router).owner();
-        require(owner_ != deployer && owner_.code.length != 0, "fee router: owner must be the Safe, not the deployer");
+        require(
+            owner_ != deployer && owner_.code.length != 0,
+            "fee router: owner must be a contract other than the deployer"
+        );
     }
 
     /// @notice Address this factory mints `salt` at. Depends on (factory, salt) only.

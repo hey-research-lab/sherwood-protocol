@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import "forge-std/Test.sol";
 import {ProtocolFeeRouter} from "../../../src/ProtocolFeeRouter.sol";
 import {BlacklistingERC20Mock} from "../../mocks/BlacklistingERC20Mock.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @dev Stand-in governor: on `claimUnclaimedFees` it pays the caller a preset escrow (models the real
 ///      governor's pull, which only ever pays msg.sender).
@@ -160,7 +161,7 @@ contract RouterHandler is Test {
         calls++;
         vm.assume(who != safe);
         vm.prank(who);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, who));
         router.setAllocations(new ProtocolFeeRouter.Allocation[](0));
     }
 
@@ -168,7 +169,7 @@ contract RouterHandler is Test {
         calls++;
         vm.assume(who != safe);
         vm.prank(who);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, who));
         router.rescue(address(_tok(ts)), who, 1);
     }
 

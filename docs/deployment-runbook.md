@@ -96,7 +96,7 @@ Nothing is read from the environment. Every number comes from
    `DeployAll` (it sends only the transfers), then do this step.
    **Protocol fee router (SHE-239), right after run 2 and before any proposal.**
    Run `DeployProtocolFeeRouter.s.sol` with `--broadcast` from the deployer, passing
-   the Safe. Then call `setProtocolFeeRecipient(PROTOCOL_FEE_ROUTER)` from the
+   the Safe, then `script/verify-blockscout.py 4663` to verify its source. Then call `setProtocolFeeRecipient(PROTOCOL_FEE_ROUTER)` from the
    ProtocolConfig owner (the deployer while the handoff is deferred). Each proposal
    snapshots its recipient at propose time, so a proposal created first pays the
    deployer for good. Validation accepts the router, so the handoff re-run still

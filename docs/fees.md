@@ -144,8 +144,9 @@ governance change never affects an in-flight strategy.
 
 ## Protocol fee router
 
-On mainnet `protocolFeeRecipient` is `ProtocolFeeRouter` (`src/ProtocolFeeRouter.sol`),
-not a team wallet. The router has no swap or burn logic.
+On mainnet `protocolFeeRecipient` is meant to be `ProtocolFeeRouter` (`src/ProtocolFeeRouter.sol`),
+not a team wallet. Until it is seated, the leg pays the deployer placeholder, and
+`script/verify-robinhood.sh` fails on mainnet. The router has no swap or burn logic.
 
 - **Allocations.** The owner (the Safe, then the foundation) sets a list of
   `(target, bps)` legs summing to 10,000. Anyone can call `distribute(token)` to send
@@ -154,7 +155,8 @@ not a team wallet. The router has no swap or burn logic.
   nothing. Hold mode limits `distribute`, not the owner.
 - **Owner powers.** `rescue` moves any token, fee assets included, to any address,
   in any mode. `setAllocations` takes effect immediately; there is no timelock.
-  `renounceOwnership` is disabled.
+  `renounceOwnership` is disabled. Validation checks only that the owner is a contract
+  other than the deployer key; that it is the Safe is an operator check.
 - **Backlog follows the live allocations.** Whatever sits in the router goes to the
   allocations live when `distribute` runs, and anyone can run it before a queued
   `setAllocations` lands. Bundle `distribute` (or `rescue`) and `setAllocations` in

@@ -62,6 +62,17 @@ contract ProtocolFeeRouterTest is Test {
         s[2] = _alloc(coverage, c);
     }
 
+    /// @dev `n` distinct targets summing to exactly 10_000; the last leg takes the remainder.
+    function _legs(uint256 n) internal returns (ProtocolFeeRouter.Allocation[] memory a) {
+        a = new ProtocolFeeRouter.Allocation[](n);
+        uint256 each = 10_000 / n;
+        for (uint256 i; i < n; ++i) {
+            uint256 bps = i == n - 1 ? 10_000 - each * (n - 1) : each;
+            // forge-lint: disable-next-line(unsafe-typecast)
+            a[i] = _alloc(makeAddr(string.concat("leg", vm.toString(i))), uint16(bps));
+        }
+    }
+
     function _set(ProtocolFeeRouter.Allocation[] memory a) internal {
         vm.prank(safe);
         router.setAllocations(a);
@@ -160,6 +171,30 @@ contract ProtocolFeeRouterTest is Test {
         vm.prank(safe);
         vm.expectRevert(abi.encodeWithSelector(ProtocolFeeRouter.TooManyAllocations.selector, n));
         router.setAllocations(a);
+    }
+
+    /// @notice The leg cap is exactly eight: eight legs set, nine revert.
+    function test_theLegCapIsExactlyEight() public {
+        _set(_legs(8));
+        assertEq(router.allocations().length, 8);
+        ProtocolFeeRouter.Allocation[] memory nine = _legs(9);
+        vm.prank(safe);
+        vm.expectRevert(abi.encodeWithSelector(ProtocolFeeRouter.TooManyAllocations.selector, 9));
+        router.setAllocations(nine);
+    }
+
+    /// @notice AllocationsSet carries the legs, the hash is keccak of the encoded legs, and Held names its token.
+    function test_eventsCarryTheirArguments() public {
+        ProtocolFeeRouter.Allocation[] memory a = _legs(2);
+        vm.expectEmit(address(router));
+        emit ProtocolFeeRouter.AllocationsSet(a);
+        _set(a);
+        assertEq(router.allocationsHash(), keccak256(abi.encode(a)));
+
+        _set(new ProtocolFeeRouter.Allocation[](0));
+        vm.expectEmit(address(router));
+        emit ProtocolFeeRouter.Held(address(usdg), 0);
+        router.distribute(address(usdg));
     }
 
     /// @notice A new set replaces the old one whole rather than appending.

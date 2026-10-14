@@ -6,6 +6,7 @@ import {ProtocolFeeRouter} from "../../src/ProtocolFeeRouter.sol";
 import {DeploySalts} from "../../script/DeploySalts.sol";
 import {DeployProtocolFeeRouter} from "../../script/robinhood-mainnet/DeployProtocolFeeRouter.s.sol";
 import {ERC20Mock} from "../mocks/ERC20Mock.sol";
+import {ProtocolConfig} from "../../src/ProtocolConfig.sol";
 
 /// @notice Answers the two Safe reads the script probes.
 contract MockSafe {
@@ -101,6 +102,39 @@ contract DeployProtocolFeeRouterTest is Test {
         vm.expectRevert("DeployProtocolFeeRouter: owner does not answer getThreshold(); not a Safe");
         script.deploy(token);
         assertEq(_predicted().code.length, 0, "salt left unused");
+    }
+
+    // ── run(): the broadcast wrapper, against a scratch address book ──
+
+    uint256 constant SCRATCH_CHAIN_ID = 7_746_630;
+
+    /// @dev Writes a scratch book naming `deployer`, calls `run(safe)` from this contract, and deletes the book
+    ///      before returning, so a failed assert never leaves a file behind.
+    function _runAgainstScratchBook(address deployer) internal returns (bool ok, bytes memory ret, string memory book) {
+        vm.chainId(SCRATCH_CHAIN_ID);
+        string memory path = string.concat(vm.projectRoot(), "/chains/", vm.toString(SCRATCH_CHAIN_ID), ".json");
+        ProtocolConfig config = new ProtocolConfig(deployer);
+        vm.writeFile(
+            path,
+            string.concat(
+                "{\"DEPLOYER\":\"",
+                vm.toString(deployer),
+                "\",\"PROTOCOL_CONFIG\":\"",
+                vm.toString(address(config)),
+                "\"}"
+            )
+        );
+        (ok, ret) = address(script).call(abi.encodeCall(DeployProtocolFeeRouter.run, (safe)));
+        book = vm.readFile(path);
+        vm.removeFile(path);
+    }
+
+    /// @notice Outside a --broadcast run the router is simulated, as the book's DEPLOYER, but never recorded in the book.
+    function test_aDryRunRecordsNothingInTheBook() public {
+        (bool ok, bytes memory ret, string memory book) = _runAgainstScratchBook(makeAddr("deployer"));
+        assertTrue(ok, string(ret));
+        assertGt(abi.decode(ret, (address)).code.length, 0, "the simulation minted the router");
+        assertFalse(vm.keyExistsJson(book, ".PROTOCOL_FEE_ROUTER"), "dry run wrote the router into the book");
     }
 
     /// @notice A Safe with a zero threshold is refused.
