@@ -127,7 +127,7 @@ the TVL.
   +17% capacity at 30-day cadence and +28% at 7-day, for free; the audit (F-3) confirms
   7d and 28d both pass the 16-bucket scan bound and keep every lock past the challenge
   deadline. Cost: any future `challengeWindow` is capped at 38d. Constructor immutable.
-- `CAP_OVER_SPOT_BPS` stays **40_000** (PR #381). The audit (F-2) recommends ≤ 20_000:
+- Superseded on 2026-10-13 by the feed swap below: `CAP_OVER_SPOT_BPS` is now **20_000**. Original decision: `CAP_OVER_SPOT_BPS` stays **40_000** (PR #381). The audit (F-2) recommends ≤ 20_000:
   at 4× with the 50% haircut a source the cap admits can value bonds at up to 2× true
   worth, and the spec's band says 2×. Carlos kept Ana's 4× (the 24h two-pool TWAP is the
   manipulation control; a tighter cap binds on an ordinary rally) and the cap is
@@ -157,3 +157,15 @@ carries ≈ $20k. A 7-day cadence needs a second 30M tranche in new keys or the 
 bound. Lighter is in scope for the beta (Carlos): it is an uncertified community template,
 so each Lighter proposal books 2× its capital at full notional out of the same tranche,
 and the audit's G-1/G-2 (SHE-365) must be closed before the template is approved on 4663.
+
+## WOOD feed swap to a native V3 TWAP (SHE-398, 2026-10-13)
+
+Decision (Carlos): replace `WoodPoolFeed` with `WoodV3TwapFeed` during the private beta, so general access opens on a feed that has already run for weeks. Runbook §1c.
+
+- **Why.** With the cap at 2x and the 50% haircut, a fully pushed feed values stake at no more than its real worth, so the 24h window protected nothing upward. It cost a daily 2h roll slot, a 24h dark window after any replacement, and the 7-day span limit that left the feed dark from 14:40 to 19:55 UTC on 2026-10-13.
+- **Window 1h**, ring 3,660 slots. The pool writes one observation per second, not per block, so `window + 1` slots cannot be evicted; the feed's constructor requires that ring target.
+- **Cap 2x the feed's TWAP at swap time** (`CAP_OVER_SPOT_BPS = 20_000`, audit F-2). Re-seat when the feed falls below `cap / 2.5`.
+- **Lag in a fall.** A 1h TWAP can overvalue bonds for up to one window in a sharp fall. The cap is the brake.
+- **`WOOD_TWAP_FEED_MAX_DELAY` is inert.** The feed's `updatedAt` is the read time. Freshness comes from the pool's `OLD` revert and the ETH/USD max age.
+- **Accepted.** One pool, one full-range position of about 25 WETH: the LP withdrawing about half of it halts pricing. A push out of range in a block halts reads in that block. The V2 pair leaves the price path; its role as an arbitrage brake is an inference, not measured.
+- **Not in this repo.** The keeper alert at `feed < cap / 2.5` and the retirement of the keeper's `update()` job (sherwood#640).

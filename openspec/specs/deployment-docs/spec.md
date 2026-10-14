@@ -322,6 +322,28 @@ There SHALL be no cardinality-growing ceremony step and no ring-sizing derivatio
 - **WHEN** `DeployWoodPoolFeed` runs
 - **THEN** it reverts `PRE-FLIGHT: WOOD_WETH_UNISWAP_V3_POOL is not the factory's pool for (WOOD, WETH, fee)` before broadcasting, because booking the wrong venue silently removes the two-leg `min` that is the feed's manipulation control
 
+### Requirement: The WOOD feed swap replaces the ceremony's feed with a native V3 TWAP
+After run 2 the operator SHALL replace the ledger's WOOD source with `src/pricing/WoodV3TwapFeed.sol` through `script/robinhood-mainnet/SwapWoodFeed.s.sol`, in three broadcasts: `growRing`, `deployFeed`, and, one window later, `swap`. The feed reads the WOOD/WETH V3 pool's observation ring BACKWARD over `WOOD_TWAP_WINDOW` (1h); this supersedes, for this feed only, the rule that the V3 leg does not read the ring backward, because a ring of `window + 1` slots cannot be evicted by a pool that writes at most one observation per second.
+
+- `growRing` SHALL raise the pool's ring target to `WOOD_TWAP_RING` in calls of at most `WOOD_TWAP_RING_GROW_PER_TX` slots, since 4663 caps a transaction at 32M gas.
+- `deployFeed` SHALL mint the feed at the `sherwood.robinhood.v1.wood-v3-twap-feed` salt and record it as `WOOD_USD_TWAP_FEED`, after these pre-flights: WOOD and WETH share a decimals count; the pool names the booked factory and that factory's `getPool` returns it; in-range liquidity is at or above `MIN_V3_LIQUIDITY`; ETH/USD answers positive and is no older than `ETH_USD_MAX_AGE`; the ring target is at least `window + 1`; and the ring has not wrapped at a smaller size (its length exceeds the window, or its index is on the last slot, or the next slot was never written).
+- `swap` SHALL refuse unless the feed at `WOOD_USD_TWAP_FEED` carries the booked parameters, answers, and sits within `MAX_FEED_SPOT_DEVIATION_BPS` of the V2 pair's spot. It SHALL then call `setWoodFeed(feed, WOOD_TWAP_FEED_MAX_DELAY)` and seat `woodUsdPriceX8` at `CAP_OVER_SPOT_BPS` of the feed's answer.
+- The runbook SHALL state that `WOOD_TWAP_FEED_MAX_DELAY` is inert for this feed, that the cap is re-seated when the feed falls below `cap / 2.5`, and that the keeper's `update()` job ends at the swap.
+
+#### Scenario: The swap is refused before the feed can answer
+- **GIVEN** the feed was deployed less than one window after the pool's oldest observation
+- **WHEN** the operator runs `swap`
+- **THEN** it reverts PRE-broadcast naming that the feed does not answer yet, and the ledger still reads the old feed
+
+#### Scenario: A ring that wrapped small is refused
+- **GIVEN** someone grew the ring target to a size at or below the window and the ring wrapped there before `growRing` ran
+- **WHEN** the operator runs `deployFeed` or `swap`
+- **THEN** it reverts naming the wrapped ring, until the ring's index reaches its last slot and the next write expands it
+
+#### Scenario: The cap follows the TWAP, not spot
+- **WHEN** `swap` completes
+- **THEN** `woodUsdPriceX8` equals `CAP_OVER_SPOT_BPS` of the feed's answer in that transaction, and `verify-robinhood.sh` reports that the ledger reads the booked feed
+
 ### Requirement: The fork supplies its WOOD price through a fixture feed
 On Fork posture the ceremony SHALL mint `script/robinhood-mainnet/ForkWoodFeedFixture.sol` instead, at its own distinct salt, priced from the fork's OWN state — the WOOD/WETH pair reserves times the live ETH/USD answer — so bond valuations on the fork track mainnet rather than an invented number. The fixture reports `updatedAt` as `block.timestamp`, so it stays fresh across the `evm_increaseTime` warps a governance traversal needs; that makes staleness untestable through it, which is the correct trade for a fixture whose only job is keeping the price path alive across time travel. **The fixture SHALL refuse to be constructed on chain 4663.** A fixture feed on mainnet would price every guardian bond off an owner-writable number.
 
@@ -424,7 +446,7 @@ The WOOD half of exposure (1) is now BOUNDED rather than merely disclosed: every
 The runbook SHALL state the operational consequences:
 - **Seed and maintain the cap ABOVE market.** It bounds upward manipulation and nothing else; a cap at `M×` market caps manipulation at `M×`. It does not need accuracy, because it is never the valuation — a monthly review is sufficient, since a drifted cap simply stops binding. It does need MAINTENANCE: it is the only thing bounding upward manipulation of a ~$438k pool, where moving spot 2× costs ~$91k.
 - **Lowering the cap is the emergency brake** — safe direction, unbounded, immediate, and NOT rate-limited on-chain. The ledger's one-move-per-day interval and its 2×-per-raise ceiling were both removed (issue #89); rate limiting is enforced off-chain by a Zodiac module on the owner Safe. See "Rate limiting is enforced off-chain" below.
-- **A keeper SHALL call `WoodPoolFeed.update()`**, permissionlessly and on a schedule shorter than the `maxDelay` passed to `setWoodFeed`. A failing keeper is how the feed goes stale, and a stale feed with no other WOOD source is `NoWoodPrice`. `update()` is a no-op when a pool is early or below its depth floor, so a failing keeper looks like nothing at all.
+- **Until the WOOD feed swap, a keeper SHALL call `WoodPoolFeed.update()`**, permissionlessly and on a schedule shorter than the `maxDelay` passed to `setWoodFeed`. After the swap no call is needed (see the WOOD feed swap requirement). A failing keeper is how the feed goes stale, and a stale feed with no other WOOD source is `NoWoodPrice`. `update()` is a no-op when a pool is early or below its depth floor, so a failing keeper looks like nothing at all.
 - **`NoWoodPrice` is fail-safe, not a halt, and the asymmetry is deliberate.** `recordApproval` CATCHES it and books nothing, so approve votes still land and reviews never become block-only. `requireApproveQuorum` (execute), `proposerBondWood` (propose) and `ChallengeGame.file` all let it revert. `slashBpsFor` reads no price at all (PR #102), so convictions still compute through a total outage. Net effect: votes work, nothing new can be proposed, nothing can execute, live challenges resolve.
 - **Monitoring SHALL poll `woodPriceDetail()`**, which returns `(price, fromFeed, capBinding)`. Alert on `capBinding == true` persisting beyond a short excursion: it means the cap has drifted BELOW market and is pinning every bond while the market source sits inert. Alert on `woodPriceX8()` reverting at all. There is no event for either state.
 

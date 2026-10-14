@@ -292,6 +292,34 @@ if [ "$POSTURE" = "mainnet" ]; then
   check "feed.ethUsdMaxAge == 26h"    "$(call "$WFEED" 'ethUsdMaxAge()(uint256)')"       "93600"
 fi
 
+# SHE-398: once the book records the V3 TWAP feed, it must be the one the ledger reads.
+TWAP_FEED=$(a WOOD_USD_TWAP_FEED)
+if [ -n "$TWAP_FEED" ]; then
+  echo; echo "── WOOD V3 TWAP feed (SHE-398) ──"
+  check "WOOD_USD_TWAP_FEED (book == derived)" "$TWAP_FEED" "$(derive wood-v3-twap-feed)"
+  # The ledger has no getter for its WOOD feed; the address is the low 20 bytes of its slot.
+  FEED_SLOT=$(forge inspect ExposureLedger storageLayout --json 2>/dev/null \
+    | python3 -c "import json,sys;print(next(s['slot'] for s in json.load(sys.stdin)['storage'] if s['label']=='_woodFeed'))")
+  WIRED="0x$(cast storage "$LEDGER" "$FEED_SLOT" --rpc-url "$RPC" | tail -c 41)"
+  check "ledger reads the TWAP feed"   "$WIRED" "$TWAP_FEED"
+  POOL=$(a WOOD_WETH_UNISWAP_V3_POOL)
+  check "twapFeed.pool"                "$(call "$TWAP_FEED" 'pool()(address)')"           "$POOL"
+  check "twapFeed.window == 1h"        "$(call "$TWAP_FEED" 'window()(uint32)')"          "3600"
+  check "twapFeed.ethUsdMaxAge == 26h" "$(call "$TWAP_FEED" 'ethUsdMaxAge()(uint256)')"   "93600"
+  RING=$(cast call "$POOL" 'slot0()(uint160,int24,uint16,uint16,uint16,uint8,bool)' --rpc-url "$RPC" | sed -n 5p | awk '{print $1}')
+  if [ "${RING:-0}" -gt 3600 ]; then ok "pool ring target > window" "$RING"; else bad "pool ring target > window" "${RING:-unread} (needs 3601)"; fi
+  # The cap is static while spot moves: re-seat it once it is over 2.5x the feed.
+  ANSWER=$(cast call "$TWAP_FEED" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url "$RPC" 2>/dev/null | sed -n 2p | awk '{print $1}')
+  CAP=$(call "$LEDGER" 'woodUsdPriceX8()(uint256)')
+  if [ -z "$ANSWER" ]; then
+    bad "twapFeed answers" "reverts (ring not a window old, or below a floor)"
+  elif [ "$((CAP * 10))" -le "$((ANSWER * 25))" ]; then
+    ok "cap at most 2.5x the feed" "cap $CAP feed $ANSWER"
+  else
+    bad "cap at most 2.5x the feed" "cap $CAP feed $ANSWER (re-seat with setWoodUsdPrice)"
+  fi
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   printf '\033[32m%s checks passed, 0 failed\033[0m\n' "$PASS"
