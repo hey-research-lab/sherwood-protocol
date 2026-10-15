@@ -171,6 +171,39 @@ for leg in protocolFeeRecipient guardiansFeeRecipient; do
   R=$(call "$CONFIG" "$leg()(address)")
   if [ -n "$R" ] && [ "$R" != "$ZERO" ]; then ok "config.$leg non-zero" "$R"; else bad "config.$leg non-zero" "$R"; fi
 done
+echo; echo "── Protocol fee router (SHE-239: the protocol leg must not pay a team key) ──"
+# Each code is read once; output that is not 0x-hex is a failed read and scores as a failure, never a pass.
+code_of() { local c; c=$(cast code "$1" --rpc-url "$RPC" 2>/dev/null); [[ "$c" =~ ^0x[0-9a-fA-F]*$ ]] && echo "$c"; }
+ROUTER=$(derive protocol-fee-router)
+PFR=$(call "$CONFIG" 'protocolFeeRecipient()(address)')
+RCODE=""; [ -z "$ROUTER" ] || RCODE=$(code_of "$ROUTER")
+if [ -z "$RCODE" ]; then
+  bad "PROTOCOL_FEE_ROUTER code read" "derive or cast code failed for '$ROUTER'"
+elif [ "$RCODE" = "0x" ]; then
+  if [ -n "$(a PROTOCOL_FEE_ROUTER)" ]; then
+    bad "PROTOCOL_FEE_ROUTER holds code" "book names $(a PROTOCOL_FEE_ROUTER), nothing at $ROUTER"
+  elif [ "$POSTURE" = "mainnet" ]; then
+    bad "fee router minted and seated" "nothing at $ROUTER; protocol leg pays $PFR"
+  else
+    printf '  \033[33mWARN\033[0m %-46s %s\n' "fee router not deployed (fork)" "protocol leg pays $PFR"
+  fi
+else
+  book_matches "PROTOCOL_FEE_ROUTER" PROTOCOL_FEE_ROUTER "$ROUTER"
+  RHASH=$(cast keccak "$RCODE")
+  PINNED=$(grep -A1 'PROTOCOL_FEE_ROUTER_RUNTIME_HASH =' script/DeploySalts.sol | grep -o '0x[0-9a-f]\{64\}')
+  check "router codehash == DeploySalts pin" "$RHASH" "$PINNED"
+  check "router codehash == forge inspect" "$RHASH" \
+    "$(cast keccak "$(forge inspect ProtocolFeeRouter deployedBytecode 2>/dev/null | tail -1)")"
+  check "config.protocolFeeRecipient == router" "$PFR" "$ROUTER"
+  RO=$(call "$ROUTER" 'owner()(address)')
+  ROCODE=""; [ -z "$RO" ] || ROCODE=$(code_of "$RO")
+  if [ -n "$ROCODE" ] && [ "$ROCODE" != "0x" ] && [ "$(lc "$RO")" != "$(lc "$DEPLOYER")" ]; then
+    ok "router.owner is a contract, not the deployer" "$RO"
+  else
+    bad "router.owner is a contract, not the deployer" "owner '$RO', code read '${ROCODE:0:10}'"
+  fi
+  check "router.pendingOwner (none)" "$(call "$ROUTER" 'pendingOwner()(address)')" "$ZERO"
+fi
 
 echo; echo "── Strategy templates (the allowlist IS _templateKeys) ──"
 APPROVED=0
