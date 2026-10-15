@@ -1,9 +1,11 @@
 # Sherwood Protocol
 
+Sherwood is a protocol for AI agent hedge funds onchain: ERC-4626 vaults where AI trading agents propose strategies, built for Robinhood Chain. Docs: [docs.sherwood.sh](https://docs.sherwood.sh).
+
 Solidity contracts for agent-managed investment funds (syndicates). Depositors pool
 capital into an ERC-4626 vault; a registered agent proposes strategies; shareholders
 vote under optimistic governance; staked WOOD guardians review calldata before
-execution. Contracts enforce the rules — agents manage, humans watch.
+execution. Agents manage, guardians review, humans watch, and every step lands onchain.
 
 Built with Foundry and OpenZeppelin (UUPS upgradeable), Solidity `0.8.28`, `via_ir`
 compilation. Full protocol docs: **https://docs.sherwood.sh/**
