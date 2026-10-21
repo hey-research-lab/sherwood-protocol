@@ -26,6 +26,13 @@ interface IExposureLedger {
     error CoverageHorizonExceeded();
 
     error InsufficientApproveCoverage();
+
+    /// @notice The booked lock carries less than one slot's share of the need.
+    error ApproveLockBelowFloor();
+
+    /// @notice The proposal's vault asset or required coverage could not be read.
+    error CoverageInputsUnreadable();
+
     error NotGuardianRegistry();
     error FeedNotConfigured();
     error StalePrice();
@@ -61,24 +68,12 @@ interface IExposureLedger {
     ///         than meaning uncapped: an unset cap would admit an unbounded market
     ///         price and hand a ~$438k pool the valuation of every guardian bond.
     ///
-    ///         HALTING SEMANTICS. Every consumer lets this propagate.
-    ///         `recordApproval` never reads it — the lock and the cap are WOOD —
-    ///         so the approve vote keeps landing through a WOOD outage. Execution,
-    ///         proposal creation, challenge filing and the fee-weight view all
-    ///         halt, which is correct: no price means no proof of coverage.
+    ///         HALTING SEMANTICS. Every consumer lets this propagate. Execution,
+    ///         proposal creation, challenge filing, the fee-weight view and the
+    ///         approve-side slot floor all halt, which is correct: no price means
+    ///         no proof of coverage, and a slot that cannot be shown to carry its
+    ///         share is not one the ledger will grant.
     error NoWoodPrice();
-
-    /// @notice `block.timestamp` is strictly behind `epochGenesis`, so no epoch
-    ///         figure can be derived and every epoch-indexed read is refused.
-    /// @dev    FAIL CLOSED, NOT OPEN. Flooring the subtraction at zero is the
-    ///         tempting repair and it is wrong: `openExposure` would walk
-    ///         `[0, MAX_COVERAGE_HORIZON/L]` while `_coverageEpoch` floors every
-    ///         booking at `currentEpoch()`, so on a ledger older than the horizon
-    ///         the two ranges are DISJOINT and the view answers zero with live
-    ///         coverage — opening `StakedWood.claimUnstakeGuardian`, which gates a
-    ///         guardian's exit on exactly that zero. Strictly `<`: at genesis
-    ///         `elapsed == 0` is valid.
-    error ClockBeforeGenesis();
 
     // ── Events ──
     event WoodUsdPriceSet(uint256 oldPriceX8, uint256 newPriceX8);
@@ -109,15 +104,28 @@ interface IExposureLedger {
     // ── Registry-only mutations ──
     /// @notice Lock `min(lockWood, kNumerator x slashableStake(guardian) -
     ///         openExposure(guardian))` WOOD behind (governor, proposalId) for
-    ///         `guardian`. Idempotent per (proposal, guardian). NEVER REVERTS on
-    ///         a booking failure: a zero `lockWood`, zero required coverage, an
-    ///         unpriceable vault asset, zero free budget, or settlement beyond the
-    ///         coverage horizon all lock nothing and return, so the approve vote
-    ///         still lands and any shortfall surfaces at the execute-time quorum.
-    ///         Reads NO WOOD price. There is no cohort cap: locks across a
-    ///         proposal's approvers may sum above its requirement, and nothing
-    ///         reduces a lock other than `releaseApproval`/`retireApproval`.
-    /// @param  lockWood The WOOD the guardian declares. Clamped, never rejected.
+    ///         `guardian`. Idempotent per (proposal, guardian). Reverts
+    ///         `ApproveLockBelowFloor` when the booked lock is zero, when the
+    ///         guardian's whole budget values to zero at this instant, or when
+    ///         the lock is worth less than a hundredth of the need — the
+    ///         registry's approver array is bounded, so a slot has to be paid
+    ///         for. A guardian too small to carry a hundredth may instead commit
+    ///         all it has at risk, but only while fewer than half the slots are
+    ///         booked; the remaining slots cost a hundredth unconditionally.
+    ///         Also reverts when the coverage inputs cannot be read
+    ///         (`CoverageInputsUnreadable`), when the vault asset cannot be
+    ///         priced (`StalePrice` / `FeedNotConfigured`), and when settlement
+    ///         lands beyond the booking horizon (`CoverageHorizonExceeded`): the
+    ///         approver array is bounded, so a vote that books nothing must roll
+    ///         back rather than take a slot. There is no cohort cap:
+    ///         locks across a proposal's approvers may sum above its
+    ///         requirement, and nothing reduces a lock other than
+    ///         `releaseApproval`/`retireApproval`.
+    /// @param  lockWood The WOOD the guardian declares. Clamped to the free
+    ///         budget, then refused when what it books is worth less than one
+    ///         slot's share of the need — or, while fewer than half the slots
+    ///         are booked, less than the guardian's whole-budget valuation — or
+    ///         when that valuation is zero.
     function recordApproval(address governor, uint256 proposalId, address guardian, uint256 lockWood) external;
     function releaseApproval(address governor, uint256 proposalId, address guardian) external;
 
@@ -304,8 +312,6 @@ interface IExposureLedger {
     function openExposure(address guardian) external view returns (uint256);
     function coverageUsd(address asset, uint256 amount) external view returns (uint256);
     function proposerBondWood(address asset, uint256 requiredCoverage) external view returns (uint256);
-    /// @notice Epochs elapsed since `epochGenesis`; reverts `ClockBeforeGenesis`
-    ///         on a clock behind it.
     function currentEpoch() external view returns (uint256);
 
     /// @notice The WOOD/USD price CAP, 8 decimals. NEVER SERVED AS A PRICE — it

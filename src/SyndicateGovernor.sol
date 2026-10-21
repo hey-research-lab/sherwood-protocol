@@ -10,6 +10,7 @@ import {IExposureLedger} from "./interfaces/IExposureLedger.sol";
 import {IChallengeGame} from "./interfaces/IChallengeGame.sol";
 import {IProposerBondEscrow} from "./interfaces/IProposerBondEscrow.sol";
 import {IStrategyFactory} from "./interfaces/IStrategyFactory.sol";
+import {IStrategy} from "./interfaces/IStrategy.sol";
 import {GovernorParameters} from "./GovernorParameters.sol";
 import {GovernorEmergency} from "./GovernorEmergency.sol";
 import {BatchExecutorLib} from "./BatchExecutorLib.sol";
@@ -57,7 +58,7 @@ contract SyndicateGovernor is GovernorParameters, GovernorEmergency, Initializab
     ///         WHAT THIS BOUNDS, STATED PLAINLY. The floor does not close the
     ///         dilution attack; it prices it. An attacker who delivers 10% of
     ///         the capital instead of 0% settles just above the bar and mints
-    ///         at ~10x the fair share count, then `sweep()` returns the
+    ///         at ~10x the fair share count, then a later batch returns the
     ///         withheld remainder. For a queued deposit `D` against vault
     ///         assets `TA` that is `10D / (TA + 10D)` of the vault: ~60% at
     ///         `D = 0.2·TA`, ~82% at `D = TA`. What changes is the price of the
@@ -437,9 +438,13 @@ contract SyndicateGovernor is GovernorParameters, GovernorEmergency, Initializab
         if (_commitState(proposal) != ProposalState.Pending) revert NotWithinVotingPeriod();
         if (_hasVoted[proposalId][msg.sender]) revert AlreadyVoted();
 
-        // Snapshot weight is final: no share is minted or burned while the
-        // proposal is open (`SyndicateVault.redemptionsLocked`), so no live cap.
-        uint256 weight = IVotes(proposal.vault).getPastVotes(msg.sender, proposal.snapshotTimestamp);
+        // Weight is capped at the end of the propose second, so shares redeemed ahead of `propose`
+        // in it carry no veto; that checkpoint is readable only once the second has ended.
+        uint256 snap = proposal.snapshotTimestamp;
+        if (block.timestamp <= snap + 1) revert NotWithinVotingPeriod();
+        uint256 weight = IVotes(proposal.vault).getPastVotes(msg.sender, snap);
+        uint256 atPropose = IVotes(proposal.vault).getPastVotes(msg.sender, snap + 1);
+        if (atPropose < weight) weight = atPropose;
         if (weight == 0) revert NoVotingPower();
 
         _hasVoted[proposalId][msg.sender] = true;
@@ -525,6 +530,10 @@ contract SyndicateGovernor is GovernorParameters, GovernorEmergency, Initializab
             .executeGovernorBatch(
                 _loadCalls(_settlementCalls, proposalId), _loadCaps(_effectiveSettlementCallCaps, proposalId), 0
             );
+        // A leg that skips `strategy.settle()` would leave capital on the clone (`unstick` refuses it too).
+        // No answer skips the check: registration already required `executed()` to answer.
+        (bool ok, bytes memory ret) = proposal.strategy.staticcall(abi.encodeCall(IStrategy.executed, ()));
+        if (ok && ret.length == 32 && abi.decode(ret, (bool))) revert StrategyNotSettled(proposal.strategy);
 
         _requireSettlePriceAboveFloorHook(proposalId, proposal, false);
 

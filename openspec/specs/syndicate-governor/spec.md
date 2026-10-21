@@ -67,7 +67,7 @@ A non-collaborative proposal SHALL enter `Pending` immediately at propose; a col
 
 #### Scenario: Vote weight from checkpointed shares
 - **WHEN** a shareholder votes on a Pending proposal
-- **THEN** their vote weight SHALL be `getPastVotes(voter, snapshotTimestamp)` from the vault's ERC20Votes checkpoints, and a zero weight SHALL revert with `NoVotingPower`
+- **THEN** their vote weight SHALL be the lesser of `getPastVotes(voter, snapshotTimestamp)` and `getPastVotes(voter, snapshotTimestamp + 1)` (the end of the propose second), so shares redeemed ahead of `propose` in its second carry no weight; a vote inside the propose second SHALL revert with `NotWithinVotingPeriod`, and a zero weight SHALL revert with `NoVotingPower`
 
 #### Scenario: One vote per address
 - **WHEN** an address that has already voted on a proposal votes again
@@ -78,10 +78,10 @@ A non-collaborative proposal SHALL enter `Pending` immediately at propose; a col
 - **THEN** the call SHALL revert with `NotWithinVotingPeriod`
 
 ### Requirement: Optimistic passage with veto threshold
-The governor SHALL use optimistic governance: no FOR-vote quorum exists. At `voteEnd`, a Pending proposal SHALL be `Rejected` if and only if `votesAgainst >= pastTotalSupply * vetoThresholdBps / 10_000`, where `vetoThresholdBps` is the per-proposal snapshot taken when the proposal entered Pending (a mid-vote parameter change cannot move the bar) and `pastTotalSupply` is the vault supply at `snapshotTimestamp`. When `pastTotalSupply == 0`, the veto check SHALL be skipped (otherwise the threshold collapses to zero and every proposal auto-rejects). A proposal not vetoed at voteEnd proceeds into guardian review.
+The governor SHALL use optimistic governance: no FOR-vote quorum exists. At `voteEnd`, a Pending proposal SHALL be `Rejected` if and only if `votesAgainst >= votableSupply * vetoThresholdBps / 10_000`, where `vetoThresholdBps` is the per-proposal snapshot taken when the proposal entered Pending (a mid-vote parameter change cannot move the bar) and `votableSupply = min(snapshotSupply - snapshotQueued, proposeSupply - min(proposeQueued, snapshotQueued))`, with `snapshotSupply` and `snapshotQueued` the vault supply and the queue's votes at `snapshotTimestamp`, `proposeSupply` and `proposeQueued` the same two read at the end of the propose second (`snapshotTimestamp + 1`), and every subtraction clamped at zero, so the bar never counts shares that left the vault or were queued by the snapshot, and nothing after the propose second moves it. When `votableSupply == 0`, the veto check SHALL be skipped (otherwise the threshold collapses to zero and every proposal auto-rejects). A proposal not vetoed at voteEnd proceeds into guardian review.
 
 #### Scenario: Veto threshold reached
-- **WHEN** voting ends with `votesAgainst` at or above the snapshotted veto threshold of past total supply
+- **WHEN** voting ends with `votesAgainst` at or above the snapshotted veto threshold of `votableSupply`
 - **THEN** the proposal SHALL resolve to `Rejected` without traversing guardian review, and no registry economic commit SHALL fire for it
 
 #### Scenario: Silence passes the vote
@@ -136,6 +136,10 @@ After a passed vote the proposal SHALL sit in `GuardianReview` until `reviewEnd`
 #### Scenario: Interim LP flow excluded from P&L
 - **WHEN** depositors add or remove principal while a strategy is live
 - **THEN** the settlement P&L SHALL exclude that interim net flow, so fees are charged only on strategy performance
+
+#### Scenario: Settlement leg that does not unwind the strategy
+- **WHEN** the settlement calls leave the proposal's strategy answering `executed() == true`
+- **THEN** `settleProposal` and `unstick` SHALL revert with `StrategyNotSettled`; only the guardian-reviewed, owner-bonded `finalizeEmergencySettle` MAY close the proposal with the strategy still executed
 
 ### Requirement: Fee distribution waterfall
 On a positive P&L, unless the proposal's snapshotted `selfManagesFees` flag is true (which skips the entire governor fee waterfall), the governor SHALL distribute, in order: (1) protocol fee = gross profit × snapshotted `protocolFeeBps` to the snapshotted protocol recipient; (2) guardian fee = gross profit × snapshotted `guardianFeeBps` to the snapshotted guardians recipient, emitting `GuardianFeeAccrued` only when the transfer actually delivers; (3) agent performance fee = net profit × the propose-time performance fee, re-clamped at settle to the live `maxPerformanceFeeBps` (emitting `FeeClamped` when the clamp fires), split across active co-proposers by their `splitBps` with the remainder to the lead proposer; (4) management fee = remaining net × the vault's live `managementFeeBps` to the vault owner. Any individual fee transfer that reverts (e.g. a blacklisted recipient) SHALL be escrowed against `(vault, recipient, token)` instead of reverting settlement, emitting `FeeTransferFailed`; recipients pull escrowed amounts later via `claimUnclaimedFees`, which SHALL zero the escrow slot before transferring and only pay from the vault that owes it.
@@ -222,7 +226,7 @@ At propose time the governor SHALL resolve the proposal's tier and required cove
 - **THEN** the proposer bond SHALL be returnable in full — forfeiture is exclusively a passed-challenge outcome outside this capability
 
 ### Requirement: Governance parameter management
-Governance parameters (`votingPeriod`, `executionWindow`, `vetoThresholdBps`, `maxPerformanceFeeBps`, `cooldownPeriod`, `collaborationWindow`, `maxCoProposers`, `minStrategyDuration`, `maxStrategyDuration`, `maxCapitalBps`) SHALL be settable only by the vault owner (a multisig expected to enforce its own external delay), applied instantly, and frozen while any proposal binds the vault (`ParamsFrozenDuringProposal`). Every setter SHALL validate hardcoded bounds: votingPeriod within [per-deployment floor (mainnet 24h), 30d]; executionWindow [1h, 7d]; vetoThresholdBps [2_000, 5_000]; maxPerformanceFeeBps ≤ 2_500 (`FeeConstants.MAX_PERFORMANCE_FEE_BPS`, the hard ceiling — distinct from the 2_000 headline the factory ships); cooldownPeriod within [per-deployment floor (mainnet 1h), 30d]; strategyDuration bounds within [1h, 3650d] with min ≤ max and max additionally capped by the protocol-wide `maxStrategyDuration` ceiling from ProtocolConfig (unset = no ceiling); collaborationWindow [1h, 7d]; maxCoProposers [1, 10]; maxCapitalBps [1, 10_000] with 0 stored meaning unset and reading as 10_000. Every change SHALL emit the uniform `ParameterChangeFinalized(paramKey, old, new)` event. The per-deployment timing floors SHALL be implementation-constructor immutables bounded below by 1 minute.
+Governance parameters (`votingPeriod`, `executionWindow`, `vetoThresholdBps`, `maxPerformanceFeeBps`, `cooldownPeriod`, `collaborationWindow`, `maxCoProposers`, `minStrategyDuration`, `maxStrategyDuration`, `maxCapitalBps`) SHALL be settable only by the vault owner (a multisig expected to enforce its own external delay), applied instantly, and frozen while any proposal binds the vault (`ParamsFrozenDuringProposal`). Every setter SHALL validate hardcoded bounds: votingPeriod within [per-deployment floor (mainnet 24h), 30d]; executionWindow [1h, 7d]; vetoThresholdBps [2_000, 5_000]; maxPerformanceFeeBps ≤ 3_000 (`FeeConstants.MAX_PERFORMANCE_FEE_BPS`, the hard ceiling — distinct from the 2_000 headline the factory ships); cooldownPeriod within [per-deployment floor (mainnet 1h), 30d]; strategyDuration bounds within [1h, 3650d] with min ≤ max and max additionally capped by the protocol-wide `maxStrategyDuration` ceiling from ProtocolConfig (unset = no ceiling); collaborationWindow [1h, 7d]; maxCoProposers [1, 10]; maxCapitalBps [1, 10_000] with 0 stored meaning unset and reading as 10_000. Every change SHALL emit the uniform `ParameterChangeFinalized(paramKey, old, new)` event. The per-deployment timing floors SHALL be implementation-constructor immutables bounded below by 1 minute.
 
 #### Scenario: Parameters frozen mid-proposal
 - **WHEN** the vault owner calls any parameter setter while `openProposalCount > 0`

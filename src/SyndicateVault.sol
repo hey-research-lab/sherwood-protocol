@@ -76,7 +76,7 @@ contract SyndicateVault is
     ///         `removeAgent` frees a slot.
     uint256 public constant MAX_AGENTS_PER_VAULT = 32;
 
-    /// @notice Hard cap on the vault-owner-set agent performance fee (25%), equal
+    /// @notice Hard cap on the vault-owner-set agent performance fee (30%), equal
     ///         to the protocol ceiling on the governor's `maxPerformanceFeeBps`.
     ///         The governor additionally clamps the realized fee to its own,
     ///         lower, configured value at settlement, so a stored value above the
@@ -660,8 +660,9 @@ contract SyndicateVault is
     }
 
     /// @inheritdoc ISyndicateVault
-    /// @dev Same predicate as `redemptionsLocked`: a proposal settles only when
-    ///      its strategy holds nothing, so no receivable is ever priced.
+    /// @dev Same predicate as `redemptionsLocked`. `totalAssets` counts idle balance only: `settleProposal`
+    ///      and `unstick` refuse a strategy still `Executed`, but `finalizeEmergencySettle` can leave
+    ///      capital on the clone, priced as a loss until a later batch settles it.
     function depositsLocked() public view returns (bool) {
         return redemptionsLocked();
     }

@@ -411,16 +411,6 @@ contract GuardianRegistry is IGuardianRegistry, ReentrancyGuardTransient, Ownabl
         return block.timestamp - (total - uint256(clockShiftAtStart));
     }
 
-    /// @notice Pause-shift baseline stamped into the review at `registerReview`.
-    function reviewClockShift(address governor, uint256 proposalId) external view returns (uint64) {
-        return _reviews[_reviewKey(governor, proposalId)].clockShiftAtRegister;
-    }
-
-    /// @notice The effective "now" the review's window is judged against (paused time excluded).
-    function effectiveNowFor(address governor, uint256 proposalId) external view returns (uint256) {
-        return _effNow(_reviews[_reviewKey(governor, proposalId)].clockShiftAtRegister);
-    }
-
     /// @dev Composite key isolating per-(governor, proposalId) review state.
     ///      `abi.encode` pads both fields to 32 bytes — no (addr, id) collision.
     function _reviewKey(address gov, uint256 proposalId) private pure returns (bytes32) {
@@ -506,15 +496,6 @@ contract GuardianRegistry is IGuardianRegistry, ReentrancyGuardTransient, Ownabl
     ///      so paying on that would let an approver who locked no coverage earn
     ///      beside one who locked its whole free budget.
     ///
-    ///      The divergence is reachable: `recordApproval` deliberately locks
-    ///      nothing and does not revert when the guardian declared zero, has no
-    ///      free budget, the asset feed is unpriceable, coverage is zero, or
-    ///      settlement is beyond the coverage horizon. The registry still pushes
-    ///      the voter into `_approvers` before the ledger hook runs, so a
-    ///      guardian can spend its whole budget on one proposal and keep
-    ///      approving everything else at full stake weight, underwriting nothing
-    ///      further.
-    ///
     ///      Returns the ledger's `coverageUsdOf` — `min(lock, slashable stake)`
     ///      at the live WOOD price, UNCAPPED at the proposal's need. A guardian
     ///      who locked more took more risk (its whole lock burns on conviction)
@@ -550,8 +531,8 @@ contract GuardianRegistry is IGuardianRegistry, ReentrancyGuardTransient, Ownabl
     // ── Guardian review voting ──
 
     /// @inheritdoc IGuardianRegistry
-    /// @dev First-vote path OR vote-change. Requires `voteEnd <= now < reviewEnd`; within that window it opens a
-    ///      due-but-unopened review itself, so no keeper `openReview` is needed first. Snapshots the caller's raw
+    /// @dev First-vote path OR vote-change. Requires `openReview` to have been
+    ///      called and `voteEnd <= now < reviewEnd`. Snapshots the caller's raw
     ///      stake at `r.snapshotAt` — the same instant the denominator is read
     ///      at — and adds it to the chosen side's tally. Approvers are capped
     ///      (the slash loop iterates them); Blockers are NOT — the block tally is
@@ -560,13 +541,17 @@ contract GuardianRegistry is IGuardianRegistry, ReentrancyGuardTransient, Ownabl
     ///      computed at `resolveReview` (see `_severityBps`).
     /// @dev `lockWood` IS THE APPROVER'S DECLARATION — the WOOD it puts behind
     ///      this proposal — forwarded verbatim to `ExposureLedger.recordApproval`,
-    ///      which clamps it to the guardian's free budget and never rejects it.
-    ///      Ignored on a Block vote: a blocker underwrites nothing. A zero on an
-    ///      Approve vote is legal and locks nothing (the vote still counts toward
-    ///      the review tally; it simply contributes no coverage to the
-    ///      execute-time quorum). THE SINGLE ENTRY: there is deliberately no
-    ///      overload without the amount, so no caller can approve without having
-    ///      stated what it is willing to lose.
+    ///      which books `min(lockWood, free budget)` and reverts
+    ///      `ApproveLockBelowFloor` when what it books is worth less than the
+    ///      smaller of one slot's share of the need and the guardian's
+    ///      whole-budget valuation, or when that valuation is zero. It also
+    ///      reverts when the need cannot be read or priced, or when settlement
+    ///      lies beyond the coverage horizon. Every one of those takes this vote
+    ///      with it, so no approver slot is seated without a lock behind it.
+    ///      Ignored on a Block vote: a blocker underwrites nothing. THE SINGLE
+    ///      ENTRY: there is deliberately no overload without the amount, so no
+    ///      caller can approve without having stated what it is willing to
+    ///      lose.
     function voteOnProposal(address governor, uint256 proposalId, GuardianVoteType support, uint256 lockWood)
         external
         whenNotPaused
@@ -576,12 +561,17 @@ contract GuardianRegistry is IGuardianRegistry, ReentrancyGuardTransient, Ownabl
 
         bytes32 key = _reviewKey(governor, proposalId);
         Review storage r = _reviews[key];
-        // A resolved review accepts no vote and is never re-opened.
+        if (!r.opened) revert ReviewNotOpen();
+        // Defence in depth alongside `openReview`'s resolved guard: a resolved
+        // review (cancelled, or already committed) accepts no further votes,
+        // so no approve weight can accrue on a proposal that carries no slash
+        // risk. Unreachable while `openReview` refuses to re-open — kept so a
+        // future edit to either guard cannot silently arm the other.
         if (r.resolved) revert ReviewNotOpen();
 
+        // window consumable in the first place.
         uint256 nowEff = _effNow(r.clockShiftAtRegister);
         if (r.voteEnd == 0 || nowEff < r.voteEnd || nowEff >= r.reviewEnd) revert ReviewNotOpen();
-        if (!r.opened) _openReview(r, governor, proposalId);
 
         if (!swood.isActiveGuardian(msg.sender)) revert NotActiveGuardian();
 
@@ -616,10 +606,10 @@ contract GuardianRegistry is IGuardianRegistry, ReentrancyGuardTransient, Ownabl
             // voteOnProposal observes committed state — do NOT move any state
             // write below this hook. Same discipline as resolveReview.
             if (support == GuardianVoteType.Approve && address(exposureLedger) != address(0)) {
-                // The aggregate exposure cap is checked here, at the approve
-                // vote. An over-exposed guardian locks nothing rather than
-                // reverting; the vote still lands and the shortfall surfaces
-                // at the execute-time quorum.
+                // Unwrapped, deliberately: the ledger refuses a lock too small
+                // to carry its share of a bounded approver slot, and that
+                // refusal has to undo the push above rather than seat a
+                // guardian the coverage quorum will never see.
                 exposureLedger.recordApproval(governor, proposalId, msg.sender, lockWood);
             }
             emit GuardianVoteCast(governor, proposalId, msg.sender, support, weight);
@@ -708,7 +698,10 @@ contract GuardianRegistry is IGuardianRegistry, ReentrancyGuardTransient, Ownabl
         if (er.reviewEnd > 0 && _effNow(er.clockShiftAtOpen) < er.reviewEnd) revert EmergencyAlreadyOpen();
         if (er.callsHash != bytes32(0) && !er.resolved) _resolveEmergency(eKey, proposalId, er);
         IStakedWood sw = swood;
-        uint256 ts1 = block.timestamp - 1;
+        // Electorate and blocker weights read at the propose-time `snapshotAt`, not an instant the owner picks.
+        // Zero only for a review registered before that field existed: keep the old open-time read.
+        uint256 ts1 = _reviews[eKey].snapshotAt;
+        if (ts1 == 0) ts1 = block.timestamp - 1;
         uint256 gs = sw.getPastTotalVotes(ts1);
 
         er.governor = msg.sender; // stored before any external calls
@@ -841,22 +834,23 @@ contract GuardianRegistry is IGuardianRegistry, ReentrancyGuardTransient, Ownabl
 
         uint256 ve = r.voteEnd;
         if (ve == 0 || _effNow(r.clockShiftAtRegister) < ve) revert ReviewNotOpen();
-        _openReview(r, governor, proposalId);
-    }
 
-    /// @dev Snapshots stake and the owner-settable thresholds at the open instant.
-    function _openReview(Review storage r, address governor, uint256 proposalId) private {
-        uint128 totalAtOpen = uint128(swood.getPastTotalVotes(uint256(r.snapshotAt)));
+        IStakedWood sw = swood;
+        uint128 totalAtOpen = uint128(sw.getPastTotalVotes(uint256(r.snapshotAt)));
+        uint256 combinedAtOpen = uint256(totalAtOpen);
         r.opened = true;
         r.totalStakeAtOpen = totalAtOpen;
+        // Snapshot block-quorum at open so the owner can't shift the
+        // threshold after voters have cast.
         // forge-lint: disable-next-line(unsafe-typecast)
         r.blockQuorumBpsAtOpen = uint16(blockQuorumBps);
         r.minSlashBpsAtOpen = uint16(swood.minSlashBps() + 1);
         // forge-lint: disable-next-line(unsafe-typecast)
         r.maxSlashBpsAtOpen = uint16(swood.maxSlashBps() + 1);
-        // Still `t-1`: the basis sWOOD sizes slashes from, deliberately the
-        // OPEN instant rather than `snapshotAt` — a slash is sized off the
-        // stake a guardian held while the review it judges was running.
+        // Still `t-1`: this is the basis sWOOD sizes slashes from, and it is
+        // deliberately the OPEN instant rather than `snapshotAt` — a slash
+        // should be sized off the stake a guardian actually held when the
+        // review they are being judged for was running.
         r.openedAt = uint64(block.timestamp - 1);
         emit ReviewOpened(governor, proposalId, totalAtOpen);
     }

@@ -3,9 +3,7 @@
 ## Purpose
 
 Requirements on the Sherwood deployment process: the mainnet-faithful Robinhood fork environment (Tenderly vnet, chain 9994663), the core deploy ceremony and its wiring order, the guardian-econ layered deployments (Plan B ledger, Plan D challenge game, TokenCourt) with their pre-flight checks, and chain-specific constraints. Scenarios are the verification steps an operator runs to prove each requirement held.
-
 ## Requirements
-
 ### Requirement: Chain targeting and fork identity
 The Robinhood mainnet deploy script SHALL refuse to run unless `block.chainid` is 4663 (Robinhood mainnet) or equals the value of `ROBINHOOD_FORK_CHAIN_ID` (e.g. 9994663 for the Tenderly vnet fork). The fork is mainnet-faithful: USDG stablecoin, official Uniswap v3+v4, Chainlink push feeds, real tokenized-stock liquidity, and the live WOOD token (`0xf8bc08092c06db6148114dcf82af881f1085f92b`, 18-dec, 1B supply, ownership renounced).
 
@@ -205,11 +203,23 @@ A full one-fund lifecycle (owner stake → fund create → deposit → strategy 
 - **THEN** it trips `StalePrice`; passing `--max-price-ages 2592000` (or refreshing `updatedAt`) clears it
 
 ### Requirement: Guardian-network simulation preconditions
-To make guardian blocking real (not the cold-start bypass), total staked guardian weight at review-open SHALL exceed `MIN_COHORT_STAKE_AT_OPEN` = 50,000 WOOD — e.g. ≥6 wallets staking 10,000 WOOD each. `agentId = 0` is acceptable (no agentRegistry on the fork). Guardians become active at `block.timestamp`, and checkpoints are read at `t−1`, so the operator SHALL advance time by ≥1s (`evm_increaseTime 1`) between staking and opening a review. Reviews snapshot cohort stake + `blockQuorumBps` at entry; 30% of cohort stake voting Block rejects the proposal, slashes approvers (WOOD burned); blocker attribution is derived off-chain from `GuardianVoteCast`/`GuardianVoteChanged` joined with `ReviewResolved`. Vote-change is allowed until the final 10% of the window; approvers are capped at 100/proposal, blockers uncapped. Slash severity is NOT voted: `_severityBps` derives it deterministically from block-side decisiveness, clamped to the `[minSlashBps, maxSlashBps]` envelope snapshotted at `openReview`; the own bond is the only slash leg (DPoS delegation removed/postponed 2026-07-26). `emergencySettleWithCalls` re-checks `requiredOwnerBond = max(minOwnerStake, MIN_OWNER_BOND_FLOOR = 1,000 WOOD)` at call time (TVL scaling is not implemented in V1 → flat 10k floor at the deployed `minOwnerStake`), and additionally requires the posted bond to be strictly positive. The Slash Appeal Reserve is NOT auto-seeded by the mainnet deploy override — the operator SHALL seed it post-deploy (`approve` + `registry.fundSlashAppealReserve`).
+To make guardian blocking real (not the cold-start bypass), total staked guardian weight at review-open SHALL exceed `MIN_COHORT_STAKE_AT_OPEN` = 50,000 WOOD — e.g. ≥6 wallets staking 10,000 WOOD each. `agentId = 0` is acceptable (no agentRegistry on the fork). Guardians become active at `block.timestamp`, and checkpoints are read at `t−1`, so the operator SHALL advance time by ≥1s (`evm_increaseTime 1`) between staking and opening a review.
+
+Clearing the cohort floor is necessary but NOT sufficient, because the two sides of the block-quorum comparison are measured differently: `cohortTooSmall` and the quorum denominator read `getPastTotalVotes`, which is RAW staked WOOD ("totals stay raw"), while a blocker's contribution reads `getPastVotes`, which applies `_ageFactorBps` on top. Fresh stake therefore counts in full against the bar it must clear and at only `ageFloorBps` (25%) toward clearing it. A cohort whose stake is all fresh cannot reach a 30% block quorum even at 100% participation — 0.25 × 60,000 = 15,000 against the 18,000 required. This asymmetry is deliberate: it denies an attacker a veto bought with stake parked seconds before the review. The operator SHALL therefore age the cohort before opening a review that is meant to be blocked, advancing time by at least `maturationPeriod × (blockQuorumBps − ageFloorBps) / (10 000 − ageFloorBps)` — 2 days at the fork's defaults (30 d, 30%, 25%) — and proportionally more when participation is partial.
+
+Reviews snapshot cohort stake + `blockQuorumBps` at entry; 30% of cohort stake voting Block rejects the proposal, slashes approvers (WOOD burned), and attributes blockers for off-chain Merkl rewards. Vote-change is allowed until the final 10% of the window; approvers are capped at 100/proposal, blockers uncapped. Slash severity is NOT voted: `voteOnProposal(address,uint256,GuardianVoteType)` carries no severity argument, and `_severityBps(Review storage)` derives it deterministically from the review — a quadratic ramp from `minSlashBps` to `maxSlashBps` that saturates at a 66.67% block supermajority, with the bounds snapshotted at `openReview` (stored plus one, so a genuine snapshot can never read as the unset sentinel) to deny an owner any mid-review re-rating. The own bond is the only slash leg (DPoS delegation removed/postponed 2026-07-26). `emergencySettleWithCalls` re-checks `requiredOwnerBond = max(minOwnerStake, MIN_OWNER_BOND_FLOOR = 1,000 WOOD)` at call time (TVL scaling is not implemented in V1 → flat 10k floor at the deployed `minOwnerStake`), and additionally requires the posted bond to be strictly positive. The Slash Appeal Reserve is NOT auto-seeded by the mainnet deploy override — the operator SHALL seed it post-deploy (`approve` + `registry.fundSlashAppealReserve`).
 
 #### Scenario: Cold-start floor cleared
 - **WHEN** six guardians each stake 10,000 WOOD and time advances 1s before a review opens
-- **THEN** cohort stake 60,000 > 50,000 makes blocking possible, and 30% of the snapshot voting Block rejects the proposal
+- **THEN** cohort stake 60,000 > 50,000 clears `cohortTooSmall`, so the review is votable rather than auto-cleared
+
+#### Scenario: Fresh cohort cannot reach the block quorum
+- **WHEN** all six guardians vote Block on a review opened 1s after staking
+- **THEN** their combined age-weighted weight is 15,000 against an 18,000 bar and the proposal is NOT rejected — the sim MUST advance time ≥2 days after staking for a block to be achievable
+
+#### Scenario: Aged cohort blocks
+- **WHEN** the operator advances `evm_increaseTime 172800` after staking and then opens the review
+- **THEN** `_ageFactorBps` has reached 30%, and 30% of the snapshot voting Block rejects the proposal and slashes approvers
 
 #### Scenario: Appeal without a seeded reserve
 - **WHEN** `refundSlash` is attempted before the Slash Appeal Reserve is funded
@@ -412,25 +422,23 @@ It is accepted because the remedy is worse. Requiring the ETH answer to be no ol
 
 Both OVERSTATE bond value — the dangerous direction — and both are bounded by the same two controls: `woodUsdPriceX8` truncates anything above the cap, and `woodHaircutBps` pre-funds an allowance below it. **`woodHaircutBps` is therefore LOAD-BEARING.**
 
-**The shipped value is 5,000 — a 50% allowance — and `DeployPlanB` SHALL seat it** inside its broadcast (constant `DEFAULT_WOOD_HAIRCUT_BPS`, overridable via `WOOD_HAIRCUT_BPS`). The ledger's own default is 10,000, which is no haircut and therefore no allowance at all, and its setter ACCEPTS 10,000 as a legal value — so nothing else in the stack refuses that configuration and it would ship silently. Pre-flight 9 refuses it. 5,000 is also the ledger's `MIN_WOOD_HAIRCUT_BPS`, so the deploy default and the floor coincide by design and any raise of the floor must move the deploy constant in the same change. Precisely: 5,000 values every source at 50%, so an overstatement of up to 100% still leaves bonds valued at or below their true worth.
+**The shipped value is 7,000 — a 30% allowance — and `DeployPlanB` SHALL seat it** inside its broadcast (constant `DEFAULT_WOOD_HAIRCUT_BPS`, overridable via `WOOD_HAIRCUT_BPS`). The ledger's own default is 10,000, which is no haircut and therefore no allowance at all, and its setter ACCEPTS 10,000 as a legal value — so nothing else in the stack refuses that configuration and it would ship silently. Pre-flight 9 refuses it. 5,000 (the ledger floor) was REJECTED as too costly to guardian return on equity, a recurring concern in review. Precisely: 7,000 values every source at 70%, so an overstatement of up to ~42.9% still leaves bonds valued at or below their true worth — the 30% sizing case with margin to spare.
 
-5,000 was once rejected as too costly to guardian return on equity, but that was under full-coverage reservation. With declared locks (SHE-227) the haircut is the ONLY buffer between the WOOD price at approval and at verdict 4–6 weeks later: at 7,000 the cohort's burn equals the loot after a 30% WOOD drop, at 5,000 after a 50% drop, and guardian ROE stays at 1.6–4.2%/yr. SHE-182 adopted 5,000 as the launch configuration on that basis.
-
-**The shipped value sits ON the floor, so there is no downward travel left.** Lowering the haircut would be the safe direction (more allowance, bonds valued lower, quorums harder), but the setter refuses anything below `MIN_WOOD_HAIRCUT_BPS`, and issue #89's removal of the once-per-day interval therefore buys nothing here. The crisis brake is the other lever this section names: lowering `woodUsdPriceX8` truncates every bond, takes one owner transaction, and is likewise un-rate-limited on-chain. Raising the floor is not a parameter change at all — `MIN_WOOD_HAIRCUT_BPS` is a constant, so it needs a ledger redeploy.
+**Lowering the haircut is the safe direction** (more allowance, bonds valued lower, quorums harder), takes one owner transaction, and is NOT rate-limited on-chain — issue #89 removed the once-per-day interval from this setter too, so the haircut can be tightened repeatedly as a crisis develops. Its VALUE bounds `[5_000, 10_000]` remain; those cost nothing in a crisis.
 
 Finding 5's `twapWindow <= maxTwapAge` invariant is unaffected and remains enforced — a different problem (structural unavailability) with a different fix.
 
 #### Scenario: Operator sizes the haircut
 - **WHEN** the operator seats `woodHaircutBps` before launch
-- **THEN** the runbook states that the value is an allowance against the ETH-staleness overstatement and the crash lag, that the shipped value is 5,000 (a 50% allowance, equal to the ledger floor), that 10,000 leaves none at all and is refused by pre-flight 9, and that the earlier guardian-ROE objection to 5,000 was reconsidered under declared locks (SHE-182)
+- **THEN** the runbook states that the value is an allowance against the ETH-staleness overstatement and the crash lag, that the shipped value is 7,000 (a 30% allowance), that 10,000 leaves none at all and is refused by pre-flight 9, and that 5,000 was rejected on guardian-ROE grounds
 
 #### Scenario: Deploy would leave the haircut at the ledger default
 - **WHEN** `DeployPlanB` would complete with `woodHaircutBps == 10_000`
 - **THEN** pre-flight 9 FAILS, naming what the allowance is FOR rather than only that the value is out of range
 
-#### Scenario: Bond valuation needs tightening during a crash
-- **GIVEN** the deploy seated the haircut at the floor minutes earlier
-- **THEN** `setWoodUsdPrice` succeeds at once — the on-chain interval that would have refused it is gone (issue #89), and any delay now comes from the owner Safe's module configuration — while `setWoodHaircutBps` below `MIN_WOOD_HAIRCUT_BPS` is refused by value, not by time
+#### Scenario: Haircut needs tightening during a crash
+- **GIVEN** the haircut was seated by the deploy minutes earlier
+- **THEN** `setWoodHaircutBps` succeeds — the on-chain interval that would have refused it is gone (issue #89), and any delay now comes from the owner Safe's module configuration
 
 ### Requirement: Rate limiting is enforced off-chain, and the contract imposes none
 `ExposureLedger.setWoodUsdPrice` and `setWoodHaircutBps` SHALL impose no rate limit and no per-call size ceiling. The owner may move either lever to any legal value, any number of times, within one block. **Rate limiting is enforced OFF-CHAIN by a Zodiac Delay/Roles module on the owner Safe** (issue #89, owner decision 2026-08-02).
