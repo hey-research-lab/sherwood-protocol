@@ -42,12 +42,11 @@ contract CertifyStrategyClasses is ScriptBase {
     bytes4 internal constant SEL_EXECUTE = 0x61461954;
     bytes4 internal constant SEL_SETTLE = 0x11da60b4;
 
-    // Risk parameters, ratified per run via CERTIFY_RATIFIED. 2_000 bps = 2x
-    // `PortfolioStrategy.MAX_SLIPPAGE_CEILING_BPS`, the whole in-batch surface; tier 1
-    // also drops the per-call `Tier2CallCapExceedsCeiling`. Derivation: openspec change
-    // `certify-strategy-classes-at-deploy`.
+    // Risk parameters, ratified per run via CERTIFY_RATIFIED. 3_500 bps = two legs of
+    // (`MAX_SLIPPAGE_CEILING_BPS` 1_000 + 750 for a feed up to `MAX_PUSH_PRICE_AGE` stale over a weekend),
+    // matching the 4663 certification of 2026-10-20 (SHE-407). Derivation: openspec change below.
     uint8 internal constant PORTFOLIO_TIER = 1;
-    uint16 internal constant PORTFOLIO_BOUND_BPS = 2_000;
+    uint16 internal constant PORTFOLIO_BOUND_BPS = 3_500;
 
     struct ClassParams {
         string key;

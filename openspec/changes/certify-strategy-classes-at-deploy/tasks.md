@@ -26,7 +26,7 @@
 - [x] 3.1 Pin the bug: before the ceremony every strategy clone resolves to `(TIER_ARBITRARY, FULL_NOTIONAL_BPS)` on both selectors
 - [x] 3.2 Phase A announces the eligible template on both selectors with the codehash and risk parameters pinned, and announces nothing for the excluded ones
 - [x] 3.3 `finalize()` before the delay surfaces `CertifyDelayNotElapsed`; after it, both selectors certify
-- [x] 3.4 The property: after the ceremony a factory-minted clone reads `(1, 2_000)` on both selectors, and a clone of an excluded template still reads full notional
+- [x] 3.4 The property: after the ceremony a factory-minted clone reads `(1, 3_500)` on both selectors, and a clone of an excluded template still reads full notional
 - [x] 3.5 Phase A skips without reverting once ownership has moved; a merely pending handoff does not block it; phase B completes after a completed handoff
 - [x] 3.6 Both phases are re-runnable, including from a half-finished ceremony, and a re-run emits no redundant `ClassCertified`
 - [x] 3.7 Every test fails under a stated mutation of the code it pins

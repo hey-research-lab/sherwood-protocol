@@ -54,8 +54,9 @@ needs its own two-phase script with its own slot in the runbook.
   constant block with their rationale, overridable by env. `_scanCalls`
   accumulates PER CALL, so `execute()` and `settle()` are already two
   contributions — a bound sized for "the entry and exit legs of one proposal"
-  would double-count. Portfolio's `2_000` is 2x the ≤1_000 bps a single call can
-  reach (`PortfolioStrategy.MAX_SLIPPAGE_CEILING_BPS`), which is the whole
+  would double-count. Portfolio's `3_500` is two legs of the ≤1_000 bps a single
+  call can reach (`PortfolioStrategy.MAX_SLIPPAGE_CEILING_BPS`) plus 750 bps for a
+  push feed up to `MAX_PUSH_PRICE_AGE` stale over a weekend (SHE-407), over the
   in-batch surface: `_initialize` binds the swap adapter, every price feed and
   each token↔feed pairing through the registry. No bound prices
   `PortfolioStrategy.rebalanceDelta()` — `onlyProposer`, called on the clone

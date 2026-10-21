@@ -152,7 +152,7 @@ contract DeployStrategyClassCertificationTest is Test {
     bytes4 constant SEL_THIRD = IStrategy.name.selector;
 
     uint8 constant TIER_1 = 1;
-    uint16 constant PORTFOLIO_BOUND = 2_000;
+    uint16 constant PORTFOLIO_BOUND = 3_500;
 
     // The script's own halt strings, so a test cannot pass on an unrelated revert.
     bytes constant HALT_FINALIZE = bytes("class certification halted - see RUNBOOK lines above");
