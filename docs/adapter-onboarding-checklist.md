@@ -387,14 +387,14 @@ cast storage $ADAPTER 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a71785
 
 # 5. Bond state, if submitter bonds are configured. A non-zero `releasableAt`
 #    means this key is mid-release and `certify` will revert BondPendingRelease.
-cast call $REG "bondOf(address,bytes4)((address,uint96,uint64))" $ADAPTER $SEL --rpc-url $RPC
+cast call $REG "bondOf(address,bytes4)((address,uint96,uint64,address))" $ADAPTER $SEL --rpc-url $RPC
 
 # 6. Pending certification queue (issue #45). A non-zero `readyAt` means a
 #    grant is announced but not yet live -- `tierOf` still reports tier 2.
 #    `readyAt` is a unix timestamp; `certify` reverts CertifyDelayNotElapsed
 #    before it and CodehashChanged if the live codehash no longer matches
 #    the `codehash` field snapshotted here.
-cast call $REG "pendingCertificationOf(address,bytes4)((uint8,uint16,address,uint64,uint96,bytes32))" $ADAPTER $SEL --rpc-url $RPC
+cast call $REG "pendingCertificationOf(address,bytes4)((uint8,uint16,address,uint64,uint96,address,bytes32))" $ADAPTER $SEL --rpc-url $RPC
 ```
 
 **Sweep for drift.** `AdapterAllowedSet(address indexed adapter, bool allowed)`
