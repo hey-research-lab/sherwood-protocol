@@ -125,11 +125,11 @@ interface IV4Quoter {
  * @notice ISwapAdapter implementation supporting Uniswap V3 (single/multi-hop)
  *         and Uniswap V4 (single-hop, hookless) swaps.
  *
- *   extraData encoding (mode determines swap type):
- *     Mode 0 — V3 single-hop:  abi.encode(uint8(0), abi.encode(uint24 fee))
- *     Mode 1 — V3 multi-hop:   abi.encode(uint8(1), abi.encode(bytes path, uint16 perHopSlippageBps))
- *     Mode 2 — V4 single-hop:  abi.encode(uint8(2), abi.encode(uint24 fee, int24 tickSpacing))
- *     Mode 3 — V4 multi-hop:   abi.encode(uint8(3), abi.encode(PathHop[] hops))
+ *   extraData encoding (one mode byte, then the ABI-encoded route):
+ *     Mode 0 — V3 single-hop:  abi.encodePacked(uint8(0), abi.encode(uint24 fee))
+ *     Mode 1 — V3 multi-hop:   abi.encodePacked(uint8(1), abi.encode(bytes path, uint16 perHopSlippageBps))
+ *     Mode 2 — V4 single-hop:  abi.encodePacked(uint8(2), abi.encode(uint24 fee, int24 tickSpacing))
+ *     Mode 3 — V4 multi-hop:   abi.encodePacked(uint8(3), abi.encode(PathHop[] hops))
  *
  *   Modes 2/3 target hookless pools. Mode 3 supports a native-ETH currency as an
  *   INTERMEDIATE hop only — endpoints must be ERC20s. V4 flash accounting nets
